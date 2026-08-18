@@ -29,8 +29,15 @@ function LoginForm() {
     setLoading(false);
 
     if (!res || res.error) {
-      if (res?.error === "EMAIL_NOT_VERIFIED") {
+      // NextAuth reports the generic error type ("CredentialsSignin") in
+      // `res.error`; the specific reason travels in `res.code` instead (see
+      // the EmailNotVerifiedSignin/RateLimitedSignin classes in src/auth.ts).
+      if (res?.code === "email_not_verified") {
         router.push(`/verify-email?email=${encodeURIComponent(email)}`);
+        return;
+      }
+      if (res?.code === "rate_limited") {
+        setError("Too many sign-in attempts. Please wait a bit and try again.");
         return;
       }
       setError("Invalid email or password.");

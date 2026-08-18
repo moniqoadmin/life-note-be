@@ -2,16 +2,64 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { otpSchema } from "@/lib/validation";
 import { verifyOtp } from "@/lib/otp";
+import { parseJsonBody, withApiErrorHandling } from "@/lib/api";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import { getClientIp } from "@/lib/request";
 
-export async function POST(req: Request) {
-  const body = await req.json().catch(() => null);
-  const parsed = otpSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-      { status: 400 }
-    );
-  }
+// verifyOtp() already caps guesses at 5 per token (src/lib/otp.ts), but that's
+// scoped to one user's active token — without an IP limit too, an attacker
+// could still spray guesses across many different email addresses from one
+// IP to search for any account with a guessable/leaked code.
+const VERIFY_IP_LIMIT = 30;
+const VERIFY_IP_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * @swagger
+ * /auth/verify-otp:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Verify email OTP
+ *     description: Confirms the 6-digit OTP sent to the user's email and marks the account as verified.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, code]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               code:
+ *                 type: string
+ *                 minLength: 6
+ *                 maxLength: 6
+ *     responses:
+ *       200:
+ *         description: Email verified.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Message'
+ *       400:
+ *         description: Invalid input, or the code is invalid/expired.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       429:
+ *         description: Too many attempts from this IP.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+export const POST = withApiErrorHandling(async (req: Request) => {
+  await enforceRateLimit(`verify-otp:ip:${getClientIp(req)}`, VERIFY_IP_LIMIT, VERIFY_IP_WINDOW_MS);
+
+  const parsed = await parseJsonBody(req, otpSchema);
+  if (!parsed.success) return parsed.response;
 
   const email = parsed.data.email.toLowerCase();
   const user = await prisma.user.findUnique({ where: { email } });
@@ -30,4 +78,4 @@ export async function POST(req: Request) {
   });
 
   return NextResponse.json({ message: "Email verified. You can now sign in." });
-}
+});

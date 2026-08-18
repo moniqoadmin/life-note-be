@@ -8,18 +8,19 @@ datasource db {
 }
 
 model User {
-  id             String    @id @default(cuid())
-  name           String?
-  email          String    @unique
-  passwordHash   String
-  emailVerified  DateTime?
-  image          String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  passwordHash  String
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  accounts       Account[]
-  sessions       Session[]
-  otpTokens      OtpToken[]
+  accounts  Account[]
+  sessions  Session[]
+  otpTokens OtpToken[]
+  notes     Note[]
 
   @@map("users")
 }
@@ -71,17 +72,65 @@ enum OtpPurpose {
 }
 
 model OtpToken {
-  id          String     @id @default(cuid())
-  userId      String
-  purpose     OtpPurpose
-  codeHash    String
-  expiresAt   DateTime
-  consumedAt  DateTime?
-  attempts    Int        @default(0)
-  createdAt   DateTime   @default(now())
+  id         String     @id @default(cuid())
+  userId     String
+  purpose    OtpPurpose
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int        @default(0)
+  createdAt  DateTime   @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, purpose])
   @@map("otp_tokens")
+}
+
+// Fixed-window rate-limit counters, keyed by e.g. "login:ip:1.2.3.4" or
+// "login:email:foo@bar.com". Backed by Postgres (via src/lib/rate-limit.ts's
+// atomic upsert) rather than in-process memory so limits are enforced
+// correctly across multiple serverless/edge instances, not just per-process.
+model RateLimitBucket {
+  key     String   @id
+  count   Int      @default(1)
+  resetAt DateTime
+
+  // Lets a cron/cleanup job cheaply sweep expired buckets so the table doesn't
+  // grow unbounded; not required for correctness (expired buckets are just
+  // treated as fresh windows on the next hit).
+  @@index([resetAt])
+  @@map("rate_limit_buckets")
+}
+
+// Notes are arranged as an arbitrarily deep tree via self-referential `parentId`
+// (adjacency list) — simplest model to reason about and to keep consistent with the
+// rest of this schema. `parentId = null` means a root-level note.
+//
+// Deleting a note cascades to its entire subtree (Postgres walks the self-referencing
+// FK transitively), so removing a branch never leaves orphaned children behind.
+model Note {
+  id        String   @id @default(cuid())
+  userId    String
+  parentId  String?
+  title     String
+  content   String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent   Note?  @relation("NoteHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children Note[] @relation("NoteHierarchy")
+
+  // Postgres-maintained generated tsvector column (title + content), kept in sync by the
+  // DB on every write — see prisma/sql/notes-search-setup.sql for the GENERATED/GIN setup
+  // this needs once the table exists. Declared `Unsupported` so Prisma Client never tries
+  // to read/write it directly; all search queries go through $queryRaw instead.
+  searchVector Unsupported("tsvector")?
+
+  // Covers "list children of a note" / "list a user's root notes" lookups.
+  @@index([userId, parentId])
+  // Covers "most recently touched notes" style listing/ordering.
+  @@index([userId, updatedAt])
+  @@map("notes")
 }
