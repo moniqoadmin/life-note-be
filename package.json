@@ -12,11 +12,11 @@
     "@auth/prisma-adapter": "^2.11.3",
     "@prisma/client": "^6.19.3",
     "bcryptjs": "^3.0.3",
+    "google-auth-library": "^10.9.1",
     "next": "16.3.0",
     "next-auth": "^5.0.0-beta.32",
     "next-swagger-doc": "^0.4.1",
     "nodemailer": "^8.0.11",
-    "prisma": "^6.19.3",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "swagger-ui-react": "^5.32.13",
@@ -32,6 +32,7 @@
     "@types/swagger-ui-react": "^5.18.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
+    "prisma": "^7.10.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

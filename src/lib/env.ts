@@ -18,6 +18,7 @@ const envSchema = z.object({
   SMTP_USER: z.string().min(1, "SMTP_USER is required"),
   SMTP_PASSWORD: z.string().min(1, "SMTP_PASSWORD is required"),
   SMTP_FROM: z.string().min(1, "SMTP_FROM is required"),
+  GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 

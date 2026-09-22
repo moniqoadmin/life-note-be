@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { registerSchema } from "@/lib/validation";
-import { issueOtp, OtpCooldownError } from "@/lib/otp";
-import { sendVerificationOtpEmail } from "@/lib/mail";
+// OTP email verification temporarily disabled.
+// import { issueOtp, OtpCooldownError } from "@/lib/otp";
+// import { sendVerificationOtpEmail } from "@/lib/mail";
 import { hashPassword } from "@/lib/password";
 import { parseJsonBody, withApiErrorHandling } from "@/lib/api";
 import { enforceRateLimit } from "@/lib/rate-limit";
@@ -16,7 +17,8 @@ const REGISTER_IP_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 // response itself can't be used to enumerate which emails have accounts.
 // (Previously this returned 409 only for verified accounts, letting a caller
 // distinguish "verified account exists" from "no account / unverified".)
-const GENERIC_MESSAGE = "Check your email to finish setting up your account.";
+// const GENERIC_MESSAGE = "Check your email to finish setting up your account.";
+const GENERIC_MESSAGE = "Account created. You can now sign in.";
 
 /**
  * @swagger
@@ -74,7 +76,9 @@ export const POST = withApiErrorHandling(async (req: Request) => {
 
   const existing = await prisma.user.findUnique({ where: { email } });
 
-  if (existing && existing.emailVerified) {
+  // With OTP disabled, never overwrite an existing account's password from
+  // an unauthenticated request — any existing user is treated as a duplicate.
+  if (existing) {
     // Do the same amount of work (hash cost, roughly) as the real path so
     // response timing doesn't distinguish this branch either, then return
     // the identical generic message.
@@ -84,29 +88,24 @@ export const POST = withApiErrorHandling(async (req: Request) => {
 
   const passwordHash = await hashPassword(password);
 
-  // `existing` was read outside a transaction, so two concurrent first-time
-  // registrations for the same brand-new email can both see `existing ===
-  // null` and race on `create` — one throws a unique-constraint violation
-  // (P2002), which withApiErrorHandling turns into a clean response instead
-  // of a raw 500.
-  const user = existing
-    ? await prisma.user.update({
-        where: { id: existing.id },
-        data: { name, passwordHash },
-      })
-    : await prisma.user.create({
-        data: { name, email, passwordHash },
-      });
+  // Race on brand-new email is turned into a clean 409 by withApiErrorHandling (P2002).
+  await prisma.user.create({
+    data: { name, email, passwordHash, emailVerified: new Date() },
+  });
 
-  try {
-    const code = await issueOtp(user.id, "EMAIL_VERIFICATION");
-    await sendVerificationOtpEmail(email, code);
-  } catch (err) {
-    if (err instanceof OtpCooldownError) {
-      return NextResponse.json({ message: GENERIC_MESSAGE });
-    }
-    throw err;
-  }
+  // OTP email verification temporarily disabled:
+  // const user = existing
+  //   ? await prisma.user.update({ where: { id: existing.id }, data: { name, passwordHash } })
+  //   : await prisma.user.create({ data: { name, email, passwordHash } });
+  // try {
+  //   const code = await issueOtp(user.id, "EMAIL_VERIFICATION");
+  //   await sendVerificationOtpEmail(email, code);
+  // } catch (err) {
+  //   if (err instanceof OtpCooldownError) {
+  //     return NextResponse.json({ message: GENERIC_MESSAGE });
+  //   }
+  //   throw err;
+  // }
 
   return NextResponse.json({ message: GENERIC_MESSAGE });
 });
