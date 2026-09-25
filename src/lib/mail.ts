@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { env } from "@/lib/env";
+import type { PendingEmail } from "@/lib/notifications";
 
 const transporter = nodemailer.createTransport({
   host: env.SMTP_HOST,
@@ -44,5 +45,35 @@ export async function sendPasswordResetOtpEmail(to: string, code: string) {
     to,
     "Reset your password",
     otpEmailHtml("Reset your password", "Use the code below to reset your password:", code)
+  );
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export async function sendNotificationEmail({ to, type, actorName, issue, excerpt }: PendingEmail) {
+  const action = type === "MENTION" ? "mentioned you on" : "assigned you to";
+  const subject = `[${issue.key}] ${actorName} ${action} ${issue.title}`;
+  const link = env.APP_URL
+    ? `${env.APP_URL.replace(/\/$/, "")}/issues/${encodeURIComponent(issue.id)}`
+    : null;
+
+  await sendMail(
+    to,
+    subject,
+    `
+    <div style="font-family: sans-serif; max-width: 560px; margin: 0 auto;">
+      <p><strong>${escapeHtml(actorName)}</strong> ${action}
+        <strong>${escapeHtml(issue.key)}</strong>: ${escapeHtml(issue.title)}</p>
+      ${excerpt ? `<blockquote style="border-left: 3px solid #ccc; margin: 16px 0; padding-left: 12px; color: #444;">${escapeHtml(excerpt)}</blockquote>` : ""}
+      ${link ? `<p><a href="${escapeHtml(link)}">Open ${escapeHtml(issue.key)}</a></p>` : ""}
+    </div>
+  `
   );
 }

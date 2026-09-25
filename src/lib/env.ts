@@ -18,6 +18,10 @@ const envSchema = z.object({
   SMTP_USER: z.string().min(1, "SMTP_USER is required"),
   SMTP_PASSWORD: z.string().min(1, "SMTP_PASSWORD is required"),
   SMTP_FROM: z.string().min(1, "SMTP_FROM is required"),
+  // Public base URL of the frontend, used for links in notification emails
+  // (<APP_URL>/issues/<issueId>). Optional:
+  // without it, emails are sent without a link.
+  APP_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 

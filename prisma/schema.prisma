@@ -21,6 +21,22 @@ model User {
   sessions  Session[]
   otpTokens OtpToken[]
   notes     Note[]
+  sops      Sop[]
+  tasks     Task[]
+
+  workspaceMemberships WorkspaceMember[]
+  ledProjects          Project[]         @relation("ProjectLead")
+  assignedIssues       Issue[]           @relation("IssueAssignee")
+  reportedIssues       Issue[]           @relation("IssueReporter")
+  issueComments        IssueComment[]
+  workLogs             WorkLog[]
+  attachments          IssueAttachment[]
+  issueActivities      IssueActivity[]
+  watchedIssues        IssueWatcher[]
+  runbookStepsDone     RunbookStep[]
+  devLinks             DevLink[]
+  notifications        Notification[]    @relation("NotificationRecipient")
+  notificationsSent    Notification[]    @relation("NotificationActor")
 
   @@map("users")
 }
@@ -133,4 +149,597 @@ model Note {
   // Covers "most recently touched notes" style listing/ordering.
   @@index([userId, updatedAt])
   @@map("notes")
+}
+
+// Standard Operating Procedures — flat (non-nested) documents. `userId` is the author.
+// With `workspaceId` null the SOP is private to its author; with it set, it's shared
+// with every member of that workspace (who can read, edit and attach it as a runbook).
+// `version` increments on every content/title/step update so callers can tell whether
+// a copy of an SOP they're holding is stale.
+model Sop {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String?
+  title       String
+  content     String   @default("")
+  version     Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Deleting a workspace makes its shared SOPs private to their authors again.
+  workspace Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  steps     SopStep[]
+  runbooks  IssueRunbook[]
+
+  // Covers "most recently touched SOPs" style listing/ordering.
+  @@index([userId, updatedAt])
+  // Covers "SOPs shared in this workspace".
+  @@index([workspaceId, updatedAt])
+  @@map("sops")
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+model Task {
+  id        String     @id @default(cuid())
+  userId    String
+  title     String
+  content   String     @default("")
+  status    TaskStatus @default(TODO)
+  dueDate   DateTime?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Covers "list a user's tasks by status" lookups (e.g. an open-tasks view).
+  @@index([userId, status])
+  // Covers "most recently touched tasks" style listing/ordering.
+  @@index([userId, updatedAt])
+  @@map("tasks")
+}
+
+// Ordered steps of an SOP. Editing steps bumps the parent SOP's `version`, same as
+// editing its title/content. Attaching an SOP to an issue snapshots these into
+// RunbookStep rows, so later SOP edits never rewrite an in-flight runbook.
+model SopStep {
+  id              String   @id @default(cuid())
+  sopId           String
+  position        Int
+  title           String
+  description     String   @default("")
+  command         String?
+  requiresSignoff Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  sop Sop @relation(fields: [sopId], references: [id], onDelete: Cascade)
+
+  @@index([sopId, position])
+  @@map("sop_steps")
+}
+
+// ---------------------------------------------------------------------------
+// Issue tracking (workspaces → projects → issues). Unlike notes/SOPs/tasks,
+// these are shared: access is granted by WorkspaceMember, not by ownership.
+// ---------------------------------------------------------------------------
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members       WorkspaceMember[]
+  projects      Project[]
+  sprints       Sprint[]
+  epics         Epic[]
+  releases      Release[]
+  issues        Issue[]
+  sops          Sop[]
+  notifications Notification[]
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  createdAt   DateTime      @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([workspaceId, userId])
+  // Covers "list the workspaces I belong to".
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+// `key` (e.g. "AUTH") prefixes issue keys ("AUTH-104") and is immutable once created,
+// since it is baked into every issue's stored `key`. `issueCounter` is incremented
+// inside the issue-create transaction to hand out sequential numbers.
+model Project {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  key          String
+  name         String
+  description  String   @default("")
+  color        String?
+  leadId       String?
+  issueCounter Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead       User?       @relation("ProjectLead", fields: [leadId], references: [id], onDelete: SetNull)
+  components Component[]
+  issues     Issue[]
+
+  @@unique([workspaceId, key])
+  @@map("projects")
+}
+
+// Sub-areas of a project (e.g. @Auth → Sessions, OAuth2, 2FA).
+model Component {
+  id          String   @id @default(cuid())
+  projectId   String
+  name        String
+  description String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  issues  Issue[]
+
+  @@unique([projectId, name])
+  @@map("components")
+}
+
+enum SprintStatus {
+  PLANNED
+  ACTIVE
+  COMPLETED
+}
+
+model Sprint {
+  id          String       @id @default(cuid())
+  workspaceId String
+  name        String
+  goal        String       @default("")
+  status      SprintStatus @default(PLANNED)
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  issues    Issue[]
+
+  @@index([workspaceId, status])
+  @@map("sprints")
+}
+
+enum EpicStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+model Epic {
+  id          String     @id @default(cuid())
+  workspaceId String
+  name        String
+  description String     @default("")
+  color       String?
+  status      EpicStatus @default(OPEN)
+  startDate   DateTime?
+  targetDate  DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  issues    Issue[]
+
+  @@index([workspaceId])
+  @@map("epics")
+}
+
+enum ReleaseStatus {
+  UNRELEASED
+  RELEASED
+  ARCHIVED
+}
+
+// A fix version (e.g. "v2.4.0").
+model Release {
+  id          String        @id @default(cuid())
+  workspaceId String
+  name        String
+  description String        @default("")
+  status      ReleaseStatus @default(UNRELEASED)
+  releaseDate DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  issues    Issue[]
+
+  @@unique([workspaceId, name])
+  @@map("releases")
+}
+
+enum IssueType {
+  STORY
+  TASK
+  BUG
+  SECURITY
+  SPIKE
+}
+
+enum IssueStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+  CANCELLED
+}
+
+enum IssuePriority {
+  URGENT
+  HIGH
+  MEDIUM
+  LOW
+  NONE
+}
+
+// `workspaceId` is denormalized from the project so membership checks and
+// workspace-wide listing/search don't need a join. Sub-tasks are one level deep:
+// an issue with a `parentId` can't itself have sub-tasks (enforced in the API),
+// which also rules out parent cycles.
+model Issue {
+  id              String        @id @default(cuid())
+  workspaceId     String
+  projectId       String
+  number          Int
+  key             String
+  type            IssueType     @default(TASK)
+  title           String
+  description     String        @default("")
+  status          IssueStatus   @default(BACKLOG)
+  priority        IssuePriority @default(NONE)
+  storyPoints     Int?
+  labels          String[]      @default([])
+  position        Float         @default(0)
+  estimateMinutes Int?
+  dueDate         DateTime?
+  slaDueAt        DateTime?
+  resolvedAt      DateTime?
+  assigneeId      String?
+  reporterId      String
+  parentId        String?
+  componentId     String?
+  epicId          String?
+  sprintId        String?
+  releaseId       String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee  User?      @relation("IssueAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  reporter  User       @relation("IssueReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  parent    Issue?     @relation("IssueSubtasks", fields: [parentId], references: [id], onDelete: Cascade)
+  subtasks  Issue[]    @relation("IssueSubtasks")
+  component Component? @relation(fields: [componentId], references: [id], onDelete: SetNull)
+  epic      Epic?      @relation(fields: [epicId], references: [id], onDelete: SetNull)
+  sprint    Sprint?    @relation(fields: [sprintId], references: [id], onDelete: SetNull)
+  release   Release?   @relation(fields: [releaseId], references: [id], onDelete: SetNull)
+
+  acceptanceCriteria AcceptanceCriterion[]
+  outgoingRelations  IssueRelation[]       @relation("RelationFrom")
+  incomingRelations  IssueRelation[]       @relation("RelationTo")
+  comments           IssueComment[]
+  workLogs           WorkLog[]
+  attachments        IssueAttachment[]
+  activities         IssueActivity[]
+  watchers           IssueWatcher[]
+  runbooks           IssueRunbook[]
+  devLinks           DevLink[]
+  notifications      Notification[]
+
+  @@unique([projectId, number])
+  @@unique([workspaceId, key])
+  // Covers board views (issues of a project grouped by status, ordered by position).
+  @@index([projectId, status, position])
+  @@index([workspaceId, updatedAt])
+  @@index([assigneeId])
+  @@index([sprintId])
+  @@index([epicId])
+  @@index([parentId])
+  @@map("issues")
+}
+
+model AcceptanceCriterion {
+  id        String   @id @default(cuid())
+  issueId   String
+  text      String
+  done      Boolean  @default(false)
+  position  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId, position])
+  @@map("acceptance_criteria")
+}
+
+enum IssueRelationType {
+  BLOCKS
+  RELATES_TO
+  DUPLICATES
+}
+
+// Stored once, directionally ("from BLOCKS to"). The API presents the inverse
+// ("blocked by") when viewing from the `to` side.
+model IssueRelation {
+  id          String            @id @default(cuid())
+  fromIssueId String
+  toIssueId   String
+  type        IssueRelationType
+  createdAt   DateTime          @default(now())
+
+  fromIssue Issue @relation("RelationFrom", fields: [fromIssueId], references: [id], onDelete: Cascade)
+  toIssue   Issue @relation("RelationTo", fields: [toIssueId], references: [id], onDelete: Cascade)
+
+  @@unique([fromIssueId, toIssueId, type])
+  @@index([toIssueId])
+  @@map("issue_relations")
+}
+
+model IssueComment {
+  id        String    @id @default(cuid())
+  issueId   String
+  authorId  String
+  parentId  String?
+  body      String
+  editedAt  DateTime?
+  createdAt DateTime  @default(now())
+
+  issue         Issue          @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  author        User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent        IssueComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies       IssueComment[] @relation("CommentReplies")
+  notifications Notification[]
+
+  @@index([issueId, createdAt])
+  @@map("issue_comments")
+}
+
+model WorkLog {
+  id        String   @id @default(cuid())
+  issueId   String
+  userId    String
+  minutes   Int
+  note      String   @default("")
+  startedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([issueId, startedAt])
+  @@map("work_logs")
+}
+
+enum AttachmentStorage {
+  // File bytes stored in AttachmentBlob; `url` is this API's download endpoint.
+  UPLOAD
+  // External link registered by the client; `url` points elsewhere.
+  LINK
+}
+
+model IssueAttachment {
+  id         String            @id @default(cuid())
+  issueId    String
+  uploaderId String
+  storage    AttachmentStorage @default(LINK)
+  fileName   String
+  mimeType   String
+  sizeBytes  Int
+  url        String
+  createdAt  DateTime          @default(now())
+
+  issue    Issue           @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  uploader User            @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+  blob     AttachmentBlob?
+
+  @@index([issueId])
+  @@map("issue_attachments")
+}
+
+enum IssueActivityType {
+  CREATED
+  FIELD_CHANGED
+  COMMENT_ADDED
+  WORK_LOGGED
+  ATTACHMENT_ADDED
+  RELATION_ADDED
+  RELATION_REMOVED
+  RUNBOOK_ATTACHED
+  RUNBOOK_STEP_UPDATED
+  DEV_LINK_ADDED
+}
+
+// Append-only history / audit trail for an issue. `data` shape depends on `type`,
+// e.g. FIELD_CHANGED → { field, from, to }.
+model IssueActivity {
+  id        String            @id @default(cuid())
+  issueId   String
+  actorId   String?
+  type      IssueActivityType
+  data      Json              @default("{}")
+  createdAt DateTime          @default(now())
+
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([issueId, createdAt])
+  @@map("issue_activities")
+}
+
+model IssueWatcher {
+  issueId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([issueId, userId])
+  @@index([userId])
+  @@map("issue_watchers")
+}
+
+enum RunbookMode {
+  MANUAL
+  AUTOMATED
+}
+
+// An SOP attached to an issue as an executable checklist. Steps are snapshotted
+// from the SOP at attach time (`sopVersion` records which version); `sopId` is
+// kept only as a back-reference and goes null if the SOP is deleted.
+model IssueRunbook {
+  id         String      @id @default(cuid())
+  issueId    String
+  sopId      String?
+  sopVersion Int
+  title      String
+  mode       RunbookMode @default(MANUAL)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  issue Issue         @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  sop   Sop?          @relation(fields: [sopId], references: [id], onDelete: SetNull)
+  steps RunbookStep[]
+
+  @@index([issueId])
+  @@map("issue_runbooks")
+}
+
+enum RunbookStepStatus {
+  PENDING
+  IN_PROGRESS
+  VERIFIED
+  SKIPPED
+}
+
+model RunbookStep {
+  id              String            @id @default(cuid())
+  runbookId       String
+  position        Int
+  title           String
+  description     String            @default("")
+  command         String?
+  requiresSignoff Boolean           @default(false)
+  status          RunbookStepStatus @default(PENDING)
+  notes           String            @default("")
+  output          String            @default("")
+  // Free-text executor for non-human completions, e.g. "automated pipeline #4418".
+  executor        String?
+  completedById   String?
+  completedAt     DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  runbook     IssueRunbook @relation(fields: [runbookId], references: [id], onDelete: Cascade)
+  completedBy User?        @relation(fields: [completedById], references: [id], onDelete: SetNull)
+
+  @@index([runbookId, position])
+  @@map("runbook_steps")
+}
+
+enum DevLinkType {
+  BRANCH
+  PULL_REQUEST
+  COMMIT
+  BUILD
+}
+
+// Branches / PRs / commits / CI builds linked to an issue. Registered via the API
+// for now; a VCS/CI webhook can write the same rows later.
+model DevLink {
+  id          String      @id @default(cuid())
+  issueId     String
+  createdById String?
+  type        DevLinkType
+  title       String
+  url         String?
+  externalId  String?
+  status      String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  issue     Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([issueId, type])
+  @@map("dev_links")
+}
+
+// Uploaded file bytes, kept in their own table so listing/fetching attachment
+// metadata never pulls file contents. Size is capped by the upload route.
+model AttachmentBlob {
+  attachmentId String @id
+  data         Bytes
+
+  attachment IssueAttachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@map("attachment_blobs")
+}
+
+enum NotificationType {
+  MENTION
+  ASSIGNED
+}
+
+// In-app notifications (the bell). `data` carries display details captured at
+// creation time, e.g. { issueKey, issueTitle, excerpt }.
+model Notification {
+  id          String           @id @default(cuid())
+  userId      String
+  actorId     String?
+  type        NotificationType
+  workspaceId String?
+  issueId     String?
+  commentId   String?
+  data        Json             @default("{}")
+  readAt      DateTime?
+  createdAt   DateTime         @default(now())
+
+  user      User          @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actor     User?         @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+  workspace Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  issue     Issue?        @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  comment   IssueComment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  // Covers "my notifications, newest first" and "my unread count".
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  @@map("notifications")
 }
