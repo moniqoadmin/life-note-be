@@ -7,6 +7,7 @@ import { loginSchema } from "@/lib/validation";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/request";
 import { env } from "@/lib/env";
+import { findOrCreateGoogleUser, verifyGoogleIdToken } from "@/lib/google";
 
 // Login has no natural per-user lockout the way OTP does, so it's rate
 // limited on two independent axes:
@@ -84,6 +85,31 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           email: user.email,
           name: user.name,
         };
+      },
+    }),
+    // Google sign-in: the SPA obtains an ID token via Google Identity Services
+    // and posts it here; we verify it server-side and issue the normal session
+    // cookie, so Google and password logins share one session mechanism.
+    Credentials({
+      id: "google",
+      name: "Google",
+      credentials: { idToken: { type: "text" } },
+      authorize: async (credentials, request) => {
+        const idToken = typeof credentials?.idToken === "string" ? credentials.idToken : "";
+        if (!idToken) return null;
+
+        const ipStatus = await checkRateLimit(
+          `login:google:ip:${getClientIp(request)}`,
+          LOGIN_IP_LIMIT,
+          LOGIN_IP_WINDOW_MS
+        );
+        if (!ipStatus.allowed) throw new RateLimitedSignin();
+
+        const profile = await verifyGoogleIdToken(idToken);
+        if (!profile) return null;
+
+        const user = await findOrCreateGoogleUser(profile);
+        return { id: user.id, email: user.email, name: user.name };
       },
     }),
   ],

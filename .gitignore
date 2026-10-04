@@ -11,7 +11,7 @@
 # env files (never commit secrets)
 .env
 .env*.local
-
+.env.example
 # typescript
 *.tsbuildinfo
 next-env.d.ts

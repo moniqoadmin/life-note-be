@@ -22,6 +22,7 @@ const envSchema = z.object({
   // (<APP_URL>/issues/<issueId>). Optional:
   // without it, emails are sent without a link.
   APP_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
+  GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 

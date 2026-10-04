@@ -3,39 +3,33 @@ import { auth } from "@/auth";
 
 const PROTECTED_PREFIXES = ["/dashboard"];
 
-// Any origin is allowed. We echo the request's Origin back (instead of "*")
-// so credentialed requests (session cookies) are accepted by the browser.
-function corsHeaders(origin: string | null, requestHeaders: string | null) {
-  return {
-    "Access-Control-Allow-Origin": origin ?? "*",
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers":
-      requestHeaders ?? "Content-Type, Authorization, X-Requested-With",
-    "Access-Control-Max-Age": "86400",
-    Vary: "Origin",
-  };
+// CORS for /api/*. The SPA sends credentialed requests (cookies), and browsers
+// reject `Access-Control-Allow-Origin: *` for those, so instead of "*" we echo
+// back whatever Origin made the request — i.e. all origins are allowed.
+function withCors(req: Request, res: NextResponse) {
+  const origin = req.headers.get("origin");
+  if (origin) {
+    res.headers.set("Access-Control-Allow-Origin", origin);
+    res.headers.set("Access-Control-Allow-Credentials", "true");
+    res.headers.append("Vary", "Origin");
+  }
+  res.headers.set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.headers.set(
+    "Access-Control-Allow-Headers",
+    req.headers.get("access-control-request-headers") ?? "Content-Type, Authorization, X-Auth-Return-Redirect"
+  );
+  res.headers.set("Access-Control-Max-Age", "86400");
+  return res;
 }
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;
 
-  if (pathname.startsWith("/api")) {
-    const headers = corsHeaders(
-      req.headers.get("origin"),
-      req.headers.get("access-control-request-headers")
-    );
-
-    // Answer preflight requests directly.
+  if (pathname.startsWith("/api/")) {
     if (req.method === "OPTIONS") {
-      return new NextResponse(null, { status: 204, headers });
+      return withCors(req, new NextResponse(null, { status: 204 }));
     }
-
-    const response = NextResponse.next();
-    Object.entries(headers).forEach(([key, value]) =>
-      response.headers.set(key, value)
-    );
-    return response;
+    return withCors(req, NextResponse.next());
   }
 
   const isProtected = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p));
