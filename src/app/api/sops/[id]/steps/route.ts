@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createSopStepSchema } from "@/lib/validation";
 import { getAccessibleSop } from "@/lib/sops";
 import { reorder } from "@/lib/issues";
@@ -70,13 +70,13 @@ type Params = { params: Promise<{ id: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   if (!(await getAccessibleSop(userId, id))) {
-    return NextResponse.json({ error: "SOP not found" }, { status: 404 });
+    return apiError(404, "SOP not found");
   }
 
   const steps = await prisma.sopStep.findMany({ where: { sopId: id }, orderBy: { position: "asc" } });
@@ -87,13 +87,13 @@ export async function GET(_req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   if (!(await getAccessibleSop(userId, id))) {
-    return NextResponse.json({ error: "SOP not found" }, { status: 404 });
+    return apiError(404, "SOP not found");
   }
 
   const parsed = await parseJsonBody(req, createSopStepSchema);

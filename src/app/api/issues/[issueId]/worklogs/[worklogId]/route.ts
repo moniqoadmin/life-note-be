@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateWorkLogSchema } from "@/lib/validation";
 import { userSelect } from "@/lib/workspaces";
 import { getAccessibleIssue } from "@/lib/issues";
@@ -59,20 +59,20 @@ type Params = { params: Promise<{ issueId: string; worklogId: string }> };
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, worklogId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const existing = await prisma.workLog.findFirst({ where: { id: worklogId, issueId } });
   if (!existing) {
-    return NextResponse.json({ error: "Work log not found" }, { status: 404 });
+    return apiError(404, "Work log not found");
   }
   if (existing.userId !== userId) {
-    return NextResponse.json({ error: "You can only edit your own work logs" }, { status: 403 });
+    return apiError(403, "You can only edit your own work logs");
   }
 
   const parsed = await parseJsonBody(req, updateWorkLogSchema);
@@ -90,20 +90,20 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, worklogId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const existing = await prisma.workLog.findFirst({ where: { id: worklogId, issueId } });
   if (!existing) {
-    return NextResponse.json({ error: "Work log not found" }, { status: 404 });
+    return apiError(404, "Work log not found");
   }
   if (existing.userId !== userId) {
-    return NextResponse.json({ error: "You can only delete your own work logs" }, { status: 403 });
+    return apiError(403, "You can only delete your own work logs");
   }
 
   await prisma.workLog.delete({ where: { id: worklogId } });

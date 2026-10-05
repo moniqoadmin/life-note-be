@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { updateTaskSchema } from "@/lib/validation";
 import { getOwnedTask } from "@/lib/tasks";
+import { apiError, validationError } from "@/lib/api";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -111,14 +112,14 @@ type Params = { params: Promise<{ id: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   const task = await getOwnedTask(userId, id);
   if (!task) {
-    return NextResponse.json({ error: "Task not found" }, { status: 404 });
+    return apiError(404, "Task not found");
   }
 
   return NextResponse.json({ task });
@@ -127,23 +128,20 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   const existing = await getOwnedTask(userId, id);
   if (!existing) {
-    return NextResponse.json({ error: "Task not found" }, { status: 404 });
+    return apiError(404, "Task not found");
   }
 
   const body = await req.json().catch(() => null);
   const parsed = updateTaskSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-      { status: 400 }
-    );
+    return validationError(parsed.error);
   }
 
   const { title, content, status, dueDate } = parsed.data;
@@ -164,14 +162,14 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   const existing = await getOwnedTask(userId, id);
   if (!existing) {
-    return NextResponse.json({ error: "Task not found" }, { status: 404 });
+    return apiError(404, "Task not found");
   }
 
   await prisma.task.delete({ where: { id } });

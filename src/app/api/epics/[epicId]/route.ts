@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateEpicSchema } from "@/lib/validation";
 import { getAccessibleEpic } from "@/lib/workspaces";
 import { getPlanningStats } from "@/lib/planning";
@@ -81,14 +81,14 @@ type Params = { params: Promise<{ epicId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { epicId } = await params;
 
   const epic = await getAccessibleEpic(userId, epicId);
   if (!epic) {
-    return NextResponse.json({ error: "Epic not found" }, { status: 404 });
+    return apiError(404, "Epic not found");
   }
 
   const stats = await getPlanningStats({ epicId: epicId });
@@ -98,14 +98,14 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { epicId } = await params;
 
   const existing = await getAccessibleEpic(userId, epicId);
   if (!existing) {
-    return NextResponse.json({ error: "Epic not found" }, { status: 404 });
+    return apiError(404, "Epic not found");
   }
 
   const parsed = await parseJsonBody(req, updateEpicSchema);
@@ -115,7 +115,7 @@ export async function PATCH(req: Request, { params }: Params) {
   const nextStartDate = startDate !== undefined ? startDate : existing.startDate;
   const nextTargetDate = targetDate !== undefined ? targetDate : existing.targetDate;
   if (nextStartDate && nextTargetDate && nextStartDate > nextTargetDate) {
-    return NextResponse.json({ error: "startDate must be before targetDate" }, { status: 400 });
+    return apiError(400, "startDate must be before targetDate");
   }
 
   const epic = await prisma.epic.update({
@@ -136,13 +136,13 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { epicId } = await params;
 
   if (!(await getAccessibleEpic(userId, epicId))) {
-    return NextResponse.json({ error: "Epic not found" }, { status: 404 });
+    return apiError(404, "Epic not found");
   }
 
   await prisma.epic.delete({ where: { id: epicId } });

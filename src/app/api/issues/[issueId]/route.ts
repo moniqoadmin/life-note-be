@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateIssueSchema } from "@/lib/validation";
 import { canManageWorkspace, getMembership } from "@/lib/workspaces";
 import {
@@ -97,13 +97,13 @@ type Params = { params: Promise<{ issueId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const issue = await getIssueDetail(userId, issueId);
@@ -113,14 +113,14 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   const existing = await getAccessibleIssue(userId, issueId);
   if (!existing) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const parsed = await parseJsonBody(req, updateIssueSchema);
@@ -134,7 +134,7 @@ export async function PATCH(req: Request, { params }: Params) {
     issueId
   );
   if (refError) {
-    return NextResponse.json({ error: refError }, { status: 400 });
+    return apiError(400, refError);
   }
 
   const data: Prisma.IssueUncheckedUpdateInput = { ...changes };
@@ -190,22 +190,19 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   const existing = await getAccessibleIssue(userId, issueId);
   if (!existing) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   if (existing.reporterId !== userId) {
     const membership = await getMembership(userId, existing.workspaceId);
     if (!membership || !canManageWorkspace(membership.role)) {
-      return NextResponse.json(
-        { error: "Only the reporter, owners and admins can delete an issue" },
-        { status: 403 }
-      );
+      return apiError(403, "Only the reporter, owners and admins can delete an issue");
     }
   }
 

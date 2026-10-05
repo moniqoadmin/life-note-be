@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateReleaseSchema } from "@/lib/validation";
 import { getAccessibleRelease } from "@/lib/workspaces";
 import { getPlanningStats } from "@/lib/planning";
@@ -79,14 +79,14 @@ type Params = { params: Promise<{ releaseId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { releaseId } = await params;
 
   const release = await getAccessibleRelease(userId, releaseId);
   if (!release) {
-    return NextResponse.json({ error: "Release not found" }, { status: 404 });
+    return apiError(404, "Release not found");
   }
 
   const stats = await getPlanningStats({ releaseId: releaseId });
@@ -96,14 +96,14 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { releaseId } = await params;
 
   const existing = await getAccessibleRelease(userId, releaseId);
   if (!existing) {
-    return NextResponse.json({ error: "Release not found" }, { status: 404 });
+    return apiError(404, "Release not found");
   }
 
   const parsed = await parseJsonBody(req, updateReleaseSchema);
@@ -115,10 +115,7 @@ export async function PATCH(req: Request, { params }: Params) {
       where: { workspaceId_name: { workspaceId: existing.workspaceId, name } },
     });
     if (duplicate) {
-      return NextResponse.json(
-        { error: "A release with this name already exists" },
-        { status: 409 }
-      );
+      return apiError(409, "A release with this name already exists");
     }
   }
 
@@ -138,13 +135,13 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { releaseId } = await params;
 
   if (!(await getAccessibleRelease(userId, releaseId))) {
-    return NextResponse.json({ error: "Release not found" }, { status: 404 });
+    return apiError(404, "Release not found");
   }
 
   await prisma.release.delete({ where: { id: releaseId } });

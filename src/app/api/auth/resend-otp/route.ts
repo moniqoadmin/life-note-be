@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { emailOnlySchema } from "@/lib/validation";
 import { issueOtp, OtpCooldownError } from "@/lib/otp";
 import { sendVerificationOtpEmail } from "@/lib/mail";
-import { parseJsonBody, withApiErrorHandling } from "@/lib/api";
+import { parseJsonBody, withApiErrorHandling, apiError } from "@/lib/api";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/request";
 
@@ -70,10 +70,7 @@ export const POST = withApiErrorHandling(async (req: Request) => {
     await sendVerificationOtpEmail(email, code);
   } catch (err) {
     if (err instanceof OtpCooldownError) {
-      return NextResponse.json(
-        { error: "Please wait a bit before requesting another code." },
-        { status: 429 }
-      );
+      return apiError(429, "Please wait a bit before requesting another code.", { code: "OTP_COOLDOWN" });
     }
     throw err;
   }

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createCriterionSchema } from "@/lib/validation";
 import { getAccessibleIssue } from "@/lib/issues";
 
@@ -58,13 +58,13 @@ type Params = { params: Promise<{ issueId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const criteria = await prisma.acceptanceCriterion.findMany({
@@ -78,13 +78,13 @@ export async function GET(_req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const parsed = await parseJsonBody(req, createCriterionSchema);

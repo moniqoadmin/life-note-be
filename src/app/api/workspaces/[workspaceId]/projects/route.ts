@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createProjectSchema } from "@/lib/validation";
 import { getMembership, isWorkspaceMember, userSelect } from "@/lib/workspaces";
 
@@ -71,13 +71,13 @@ type Params = { params: Promise<{ workspaceId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   if (!(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const projects = await prisma.project.findMany({
@@ -96,13 +96,13 @@ export async function GET(_req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   if (!(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const parsed = await parseJsonBody(req, createProjectSchema);
@@ -110,14 +110,14 @@ export async function POST(req: Request, { params }: Params) {
   const { key, name, description, color, leadId } = parsed.data;
 
   if (leadId && !(await isWorkspaceMember(workspaceId, leadId))) {
-    return NextResponse.json({ error: "Lead is not a member of this workspace" }, { status: 400 });
+    return apiError(400, "Lead is not a member of this workspace");
   }
 
   const existing = await prisma.project.findUnique({
     where: { workspaceId_key: { workspaceId, key } },
   });
   if (existing) {
-    return NextResponse.json({ error: "A project with this key already exists" }, { status: 409 });
+    return apiError(409, "A project with this key already exists");
   }
 
   const project = await prisma.project.create({

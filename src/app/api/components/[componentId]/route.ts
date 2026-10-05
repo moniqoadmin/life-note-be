@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateComponentSchema } from "@/lib/validation";
 import { getAccessibleComponent } from "@/lib/workspaces";
 
@@ -53,14 +53,14 @@ type Params = { params: Promise<{ componentId: string }> };
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { componentId } = await params;
 
   const existing = await getAccessibleComponent(userId, componentId);
   if (!existing) {
-    return NextResponse.json({ error: "Component not found" }, { status: 404 });
+    return apiError(404, "Component not found");
   }
 
   const parsed = await parseJsonBody(req, updateComponentSchema);
@@ -72,10 +72,7 @@ export async function PATCH(req: Request, { params }: Params) {
       where: { projectId_name: { projectId: existing.projectId, name } },
     });
     if (duplicate) {
-      return NextResponse.json(
-        { error: "A component with this name already exists" },
-        { status: 409 }
-      );
+      return apiError(409, "A component with this name already exists");
     }
   }
 
@@ -93,13 +90,13 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { componentId } = await params;
 
   if (!(await getAccessibleComponent(userId, componentId))) {
-    return NextResponse.json({ error: "Component not found" }, { status: 404 });
+    return apiError(404, "Component not found");
   }
 
   await prisma.component.delete({ where: { id: componentId } });

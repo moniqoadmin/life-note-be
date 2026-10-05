@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { updateNoteSchema } from "@/lib/validation";
 import { getOwnedNote, wouldCreateCycle } from "@/lib/notes";
+import { apiError, validationError } from "@/lib/api";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -122,7 +123,7 @@ type Params = { params: Promise<{ id: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
@@ -137,7 +138,7 @@ export async function GET(_req: Request, { params }: Params) {
     },
   });
   if (!note) {
-    return NextResponse.json({ error: "Note not found" }, { status: 404 });
+    return apiError(404, "Note not found");
   }
 
   return NextResponse.json({ note });
@@ -146,23 +147,20 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   const existing = await getOwnedNote(userId, id);
   if (!existing) {
-    return NextResponse.json({ error: "Note not found" }, { status: 404 });
+    return apiError(404, "Note not found");
   }
 
   const body = await req.json().catch(() => null);
   const parsed = updateNoteSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-      { status: 400 }
-    );
+    return validationError(parsed.error);
   }
 
   const { title, content, parentId } = parsed.data;
@@ -170,13 +168,10 @@ export async function PATCH(req: Request, { params }: Params) {
   if (parentId !== undefined && parentId !== null) {
     const parent = await getOwnedNote(userId, parentId);
     if (!parent) {
-      return NextResponse.json({ error: "Note not found" }, { status: 404 });
+      return apiError(404, "Note not found");
     }
     if (await wouldCreateCycle(userId, id, parentId)) {
-      return NextResponse.json(
-        { error: "Cannot move a note under itself or one of its own descendants" },
-        { status: 400 }
-      );
+      return apiError(400, "Cannot move a note under itself or one of its own descendants");
     }
   }
 
@@ -195,14 +190,14 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   const existing = await getOwnedNote(userId, id);
   if (!existing) {
-    return NextResponse.json({ error: "Note not found" }, { status: 404 });
+    return apiError(404, "Note not found");
   }
 
   await prisma.note.delete({ where: { id } });

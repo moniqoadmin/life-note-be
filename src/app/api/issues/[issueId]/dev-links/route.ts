@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createDevLinkSchema, devLinkTypeSchema } from "@/lib/validation";
 import { getAccessibleIssue, recordActivity } from "@/lib/issues";
 
@@ -69,19 +69,19 @@ type Params = { params: Promise<{ issueId: string }> };
 export async function GET(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const typeParam = new URL(req.url).searchParams.get("type");
   const typeParsed = typeParam ? devLinkTypeSchema.safeParse(typeParam) : null;
   if (typeParam && !typeParsed?.success) {
-    return NextResponse.json({ error: "Invalid type" }, { status: 400 });
+    return apiError(400, "Invalid type");
   }
 
   const [devLinks, grouped] = await Promise.all([
@@ -99,13 +99,13 @@ export async function GET(req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const parsed = await parseJsonBody(req, createDevLinkSchema);

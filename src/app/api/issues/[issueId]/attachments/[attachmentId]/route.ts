@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { canManageWorkspace, getMembership } from "@/lib/workspaces";
 import { getAccessibleIssue } from "@/lib/issues";
+import { apiError } from "@/lib/api";
 
 type Params = { params: Promise<{ issueId: string; attachmentId: string }> };
 
@@ -26,28 +27,25 @@ type Params = { params: Promise<{ issueId: string; attachmentId: string }> };
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, attachmentId } = await params;
 
   const issue = await getAccessibleIssue(userId, issueId);
   if (!issue) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const existing = await prisma.issueAttachment.findFirst({
     where: { id: attachmentId, issueId },
   });
   if (!existing) {
-    return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
+    return apiError(404, "Attachment not found");
   }
   if (existing.uploaderId !== userId) {
     const membership = await getMembership(userId, issue.workspaceId);
     if (!membership || !canManageWorkspace(membership.role)) {
-      return NextResponse.json(
-        { error: "Only the uploader, owners and admins can remove an attachment" },
-        { status: 403 }
-      );
+      return apiError(403, "Only the uploader, owners and admins can remove an attachment");
     }
   }
 

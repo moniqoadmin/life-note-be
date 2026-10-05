@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { apiError } from "@/lib/api";
 
 /**
  * @swagger
@@ -23,7 +24,7 @@ import { prisma } from "@/lib/prisma";
 export async function POST() {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
 

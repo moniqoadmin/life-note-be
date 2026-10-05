@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { updateSopSchema } from "@/lib/validation";
 import { getAccessibleSop } from "@/lib/sops";
 import { canManageWorkspace, getMembership, userSelect } from "@/lib/workspaces";
+import { apiError, validationError } from "@/lib/api";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -117,13 +118,13 @@ type Params = { params: Promise<{ id: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   if (!(await getAccessibleSop(userId, id))) {
-    return NextResponse.json({ error: "SOP not found" }, { status: 404 });
+    return apiError(404, "SOP not found");
   }
 
   const sop = await prisma.sop.findUnique({
@@ -137,36 +138,30 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   const existing = await getAccessibleSop(userId, id);
   if (!existing) {
-    return NextResponse.json({ error: "SOP not found" }, { status: 404 });
+    return apiError(404, "SOP not found");
   }
 
   const body = await req.json().catch(() => null);
   const parsed = updateSopSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-      { status: 400 }
-    );
+    return validationError(parsed.error);
   }
 
   const { title, content, workspaceId } = parsed.data;
 
   if (workspaceId !== undefined && workspaceId !== existing.workspaceId) {
     if (existing.userId !== userId) {
-      return NextResponse.json(
-        { error: "Only the author can share or unshare an SOP" },
-        { status: 403 }
-      );
+      return apiError(403, "Only the author can share or unshare an SOP");
     }
     if (workspaceId && !(await getMembership(userId, workspaceId))) {
-      return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+      return apiError(404, "Workspace not found");
     }
   }
 
@@ -188,14 +183,14 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id } = await params;
 
   const existing = await getAccessibleSop(userId, id);
   if (!existing) {
-    return NextResponse.json({ error: "SOP not found" }, { status: 404 });
+    return apiError(404, "SOP not found");
   }
 
   if (existing.userId !== userId) {
@@ -203,10 +198,7 @@ export async function DELETE(_req: Request, { params }: Params) {
       ? await getMembership(userId, existing.workspaceId)
       : null;
     if (!membership || !canManageWorkspace(membership.role)) {
-      return NextResponse.json(
-        { error: "Only the author, or an owner/admin of its workspace, can delete an SOP" },
-        { status: 403 }
-      );
+      return apiError(403, "Only the author, or an owner/admin of its workspace, can delete an SOP");
     }
   }
 

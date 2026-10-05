@@ -28,7 +28,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? "Something went wrong");
+  if (!res.ok) throw new Error(data.error?.message ?? "Something went wrong");
   return data as T;
 }
 

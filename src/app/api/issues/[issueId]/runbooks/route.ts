@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { attachRunbookSchema } from "@/lib/validation";
 import { getAccessibleSop } from "@/lib/sops";
 import {
@@ -68,13 +68,13 @@ type Params = { params: Promise<{ issueId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const runbooks = await listRunbooks(issueId);
@@ -84,13 +84,13 @@ export async function GET(_req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const parsed = await parseJsonBody(req, attachRunbookSchema);
@@ -99,14 +99,14 @@ export async function POST(req: Request, { params }: Params) {
 
   const sop = await getAccessibleSop(userId, sopId);
   if (!sop) {
-    return NextResponse.json({ error: "SOP not found" }, { status: 404 });
+    return apiError(404, "SOP not found");
   }
   const steps = await prisma.sopStep.findMany({
     where: { sopId },
     orderBy: { position: "asc" },
   });
   if (steps.length === 0) {
-    return NextResponse.json({ error: "This SOP has no steps to run" }, { status: 400 });
+    return apiError(400, "This SOP has no steps to run");
   }
 
   const runbookId = await prisma.$transaction(async (tx) => {

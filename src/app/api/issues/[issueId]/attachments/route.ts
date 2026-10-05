@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createAttachmentSchema } from "@/lib/validation";
 import { userSelect } from "@/lib/workspaces";
 import { getAccessibleIssue, recordActivity } from "@/lib/issues";
@@ -76,13 +76,13 @@ type Params = { params: Promise<{ issueId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const attachments = await prisma.issueAttachment.findMany({
@@ -97,13 +97,13 @@ export async function GET(_req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   if (req.headers.get("content-type")?.startsWith("multipart/form-data")) {
@@ -132,19 +132,19 @@ async function uploadFile(req: Request, issueId: string, userId: string) {
   // Reject obviously oversized bodies before buffering them.
   const declared = Number(req.headers.get("content-length") ?? 0);
   if (declared > MAX_UPLOAD_BYTES + 64 * 1024) {
-    return NextResponse.json({ error: "File is larger than 10 MB" }, { status: 413 });
+    return apiError(413, "File is larger than 10 MB");
   }
 
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
   if (!(file instanceof File)) {
-    return NextResponse.json({ error: "Missing file field" }, { status: 400 });
+    return apiError(400, "Missing file field");
   }
   if (file.size === 0) {
-    return NextResponse.json({ error: "File is empty" }, { status: 400 });
+    return apiError(400, "File is empty");
   }
   if (file.size > MAX_UPLOAD_BYTES) {
-    return NextResponse.json({ error: "File is larger than 10 MB" }, { status: 413 });
+    return apiError(413, "File is larger than 10 MB");
   }
 
   const fileName = (file.name || "file").slice(0, 255);

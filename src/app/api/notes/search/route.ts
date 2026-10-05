@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { searchNotesSchema } from "@/lib/validation";
 import { getOwnedNote, searchNotes } from "@/lib/notes";
+import { apiError, validationError } from "@/lib/api";
 
 /**
  * @swagger
@@ -66,7 +67,7 @@ import { getOwnedNote, searchNotes } from "@/lib/notes";
 export async function GET(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
 
@@ -78,10 +79,7 @@ export async function GET(req: Request) {
     offset: searchParams.get("offset") ?? undefined,
   });
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-      { status: 400 }
-    );
+    return validationError(parsed.error);
   }
 
   const { q, rootId, limit, offset } = parsed.data;
@@ -89,7 +87,7 @@ export async function GET(req: Request) {
   if (rootId) {
     const root = await getOwnedNote(userId, rootId);
     if (!root) {
-      return NextResponse.json({ error: "Note not found" }, { status: 404 });
+      return apiError(404, "Note not found");
     }
   }
 

@@ -29,7 +29,7 @@ function VerifyEmailForm() {
     setLoading(false);
 
     if (!res.ok) {
-      setError(data.error ?? "Something went wrong.");
+      setError(data.error?.message ?? "Something went wrong.");
       return;
     }
 
@@ -50,7 +50,7 @@ function VerifyEmailForm() {
     setResending(false);
 
     if (!res.ok) {
-      setError(data.error ?? "Something went wrong.");
+      setError(data.error?.message ?? "Something went wrong.");
       return;
     }
     setMessage(data.message ?? "A new code has been sent.");

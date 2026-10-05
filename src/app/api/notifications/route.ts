@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { listNotificationsQuerySchema } from "@/lib/validation";
 import { userSelect } from "@/lib/workspaces";
 import { issueRefSelect, queryToObject } from "@/lib/issues";
+import { apiError } from "@/lib/api";
 
 /**
  * @swagger
@@ -34,7 +35,7 @@ import { issueRefSelect, queryToObject } from "@/lib/issues";
 export async function GET(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
 
@@ -42,7 +43,7 @@ export async function GET(req: Request) {
     queryToObject(new URL(req.url).searchParams)
   );
   if (!query.success) {
-    return NextResponse.json({ error: "Invalid query" }, { status: 400 });
+    return apiError(400, "Invalid query");
   }
   const { unread, limit, offset } = query.data;
 

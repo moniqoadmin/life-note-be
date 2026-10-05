@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { createTaskSchema, taskStatusSchema } from "@/lib/validation";
+import { validationError, apiError } from "@/lib/api";
 
 /**
  * @swagger
@@ -76,7 +77,7 @@ import { createTaskSchema, taskStatusSchema } from "@/lib/validation";
 export async function GET(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
 
@@ -84,7 +85,7 @@ export async function GET(req: Request) {
   const statusParam = searchParams.get("status");
   const statusParsed = statusParam ? taskStatusSchema.safeParse(statusParam) : null;
   if (statusParam && !statusParsed?.success) {
-    return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+    return apiError(400, "Invalid status");
   }
 
   const tasks = await prisma.task.findMany({
@@ -98,17 +99,14 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
 
   const body = await req.json().catch(() => null);
   const parsed = createTaskSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-      { status: 400 }
-    );
+    return validationError(parsed.error);
   }
 
   const { title, content, status, dueDate } = parsed.data;

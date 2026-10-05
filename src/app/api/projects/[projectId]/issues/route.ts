@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError, validationError } from "@/lib/api";
 import { createIssueSchema, listIssuesQuerySchema } from "@/lib/validation";
 import { getAccessibleProject } from "@/lib/workspaces";
 import {
@@ -102,21 +102,18 @@ type Params = { params: Promise<{ projectId: string }> };
 export async function GET(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { projectId } = await params;
 
   if (!(await getAccessibleProject(userId, projectId))) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    return apiError(404, "Project not found");
   }
 
   const query = listIssuesQuerySchema.safeParse(queryToObject(new URL(req.url).searchParams));
   if (!query.success) {
-    return NextResponse.json(
-      { error: query.error.issues[0]?.message ?? "Invalid query" },
-      { status: 400 }
-    );
+    return validationError(query.error);
   }
 
   const where = { ...buildIssueWhere(userId, query.data), projectId };
@@ -137,14 +134,14 @@ export async function GET(req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { projectId } = await params;
 
   const project = await getAccessibleProject(userId, projectId);
   if (!project) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    return apiError(404, "Project not found");
   }
 
   const parsed = await parseJsonBody(req, createIssueSchema);
@@ -153,7 +150,7 @@ export async function POST(req: Request, { params }: Params) {
 
   const refError = await validateIssueRefs(project.workspaceId, projectId, data);
   if (refError) {
-    return NextResponse.json({ error: refError }, { status: 400 });
+    return apiError(400, refError);
   }
 
   const { issueId, emails } = await prisma.$transaction(async (tx) => {

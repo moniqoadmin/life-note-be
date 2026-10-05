@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createCommentSchema, paginationSchema } from "@/lib/validation";
 import { userSelect } from "@/lib/workspaces";
 import { getAccessibleIssue, queryToObject, recordActivity } from "@/lib/issues";
@@ -74,18 +74,18 @@ type Params = { params: Promise<{ issueId: string }> };
 export async function GET(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const page = paginationSchema.safeParse(queryToObject(new URL(req.url).searchParams));
   if (!page.success) {
-    return NextResponse.json({ error: "Invalid pagination" }, { status: 400 });
+    return apiError(400, "Invalid pagination");
   }
 
   const [comments, total] = await Promise.all([
@@ -105,14 +105,14 @@ export async function GET(req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   const issue = await getAccessibleIssue(userId, issueId);
   if (!issue) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const parsed = await parseJsonBody(req, createCommentSchema);
@@ -122,7 +122,7 @@ export async function POST(req: Request, { params }: Params) {
   if (parentId) {
     const parent = await prisma.issueComment.findFirst({ where: { id: parentId, issueId } });
     if (!parent) {
-      return NextResponse.json({ error: "Parent comment not found" }, { status: 400 });
+      return apiError(400, "Parent comment not found");
     }
   }
 

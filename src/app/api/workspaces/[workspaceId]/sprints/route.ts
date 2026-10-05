@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createSprintSchema, sprintStatusSchema } from "@/lib/validation";
 import { getMembership } from "@/lib/workspaces";
 
@@ -72,19 +72,19 @@ type Params = { params: Promise<{ workspaceId: string }> };
 export async function GET(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   if (!(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const statusParam = new URL(req.url).searchParams.get("status");
   const statusParsed = statusParam ? sprintStatusSchema.safeParse(statusParam) : null;
   if (statusParam && !statusParsed?.success) {
-    return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+    return apiError(400, "Invalid status");
   }
 
   const sprints = await prisma.sprint.findMany({
@@ -99,13 +99,13 @@ export async function GET(req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   if (!(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const parsed = await parseJsonBody(req, createSprintSchema);
@@ -113,13 +113,13 @@ export async function POST(req: Request, { params }: Params) {
   const { name, goal, status, startDate, endDate } = parsed.data;
 
   if (startDate && endDate && startDate > endDate) {
-    return NextResponse.json({ error: "startDate must be before endDate" }, { status: 400 });
+    return apiError(400, "startDate must be before endDate");
   }
 
   if (status === "ACTIVE") {
     const active = await prisma.sprint.findFirst({ where: { workspaceId, status: "ACTIVE" } });
     if (active) {
-      return NextResponse.json({ error: `"${active.name}" is already active` }, { status: 409 });
+      return apiError(409, `"${active.name}" is already active`);
     }
   }
 

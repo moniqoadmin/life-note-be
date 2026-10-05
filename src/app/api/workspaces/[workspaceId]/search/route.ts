@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { workspaceSearchSchema } from "@/lib/validation";
 import { getMembership, userSelect } from "@/lib/workspaces";
 import { issueRefSelect, queryToObject } from "@/lib/issues";
+import { validationError, apiError } from "@/lib/api";
 
 type Params = { params: Promise<{ workspaceId: string }> };
 
@@ -45,21 +46,18 @@ type Params = { params: Promise<{ workspaceId: string }> };
 export async function GET(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   if (!(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const parsed = workspaceSearchSchema.safeParse(queryToObject(new URL(req.url).searchParams));
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid query" },
-      { status: 400 }
-    );
+    return validationError(parsed.error);
   }
   const { q, limit } = parsed.data;
 

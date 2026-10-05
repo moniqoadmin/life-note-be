@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateDevLinkSchema } from "@/lib/validation";
 import { getAccessibleIssue } from "@/lib/issues";
 
@@ -56,16 +56,16 @@ type Params = { params: Promise<{ issueId: string; linkId: string }> };
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, linkId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   if (!(await prisma.devLink.findFirst({ where: { id: linkId, issueId } }))) {
-    return NextResponse.json({ error: "Link not found" }, { status: 404 });
+    return apiError(404, "Link not found");
   }
 
   const parsed = await parseJsonBody(req, updateDevLinkSchema);
@@ -79,17 +79,17 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, linkId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const { count } = await prisma.devLink.deleteMany({ where: { id: linkId, issueId } });
   if (count === 0) {
-    return NextResponse.json({ error: "Link not found" }, { status: 404 });
+    return apiError(404, "Link not found");
   }
 
   return NextResponse.json({ message: "Link removed" });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateWorkspaceSchema } from "@/lib/validation";
 import { canManageWorkspace, getMembership } from "@/lib/workspaces";
 
@@ -76,14 +76,14 @@ type Params = { params: Promise<{ workspaceId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   const membership = await getMembership(userId, workspaceId);
   if (!membership) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const workspace = await prisma.workspace.findUnique({
@@ -94,7 +94,7 @@ export async function GET(_req: Request, { params }: Params) {
     },
   });
   if (!workspace) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const { sprints, ...rest } = workspace;
@@ -106,17 +106,17 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   const membership = await getMembership(userId, workspaceId);
   if (!membership) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
   if (!canManageWorkspace(membership.role)) {
-    return NextResponse.json({ error: "Only owners and admins can do this" }, { status: 403 });
+    return apiError(403, "Only owners and admins can do this");
   }
 
   const parsed = await parseJsonBody(req, updateWorkspaceSchema);
@@ -133,17 +133,17 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   const membership = await getMembership(userId, workspaceId);
   if (!membership) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
   if (membership.role !== "OWNER") {
-    return NextResponse.json({ error: "Only the owner can delete a workspace" }, { status: 403 });
+    return apiError(403, "Only the owner can delete a workspace");
   }
 
   await prisma.workspace.delete({ where: { id: workspaceId } });

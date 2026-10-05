@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { resetPasswordSchema } from "@/lib/validation";
 import { verifyOtp } from "@/lib/otp";
 import { hashPassword } from "@/lib/password";
-import { parseJsonBody, withApiErrorHandling } from "@/lib/api";
+import { parseJsonBody, withApiErrorHandling, apiError } from "@/lib/api";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/request";
 
@@ -66,12 +66,12 @@ export const POST = withApiErrorHandling(async (req: Request) => {
   const email = parsed.data.email.toLowerCase();
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user) {
-    return NextResponse.json({ error: "Invalid or expired code." }, { status: 400 });
+    return apiError(400, "Invalid or expired code.", { code: "INVALID_OTP" });
   }
 
   const result = await verifyOtp(user.id, "PASSWORD_RESET", parsed.data.code);
   if (!result.ok) {
-    return NextResponse.json({ error: "Invalid or expired code." }, { status: 400 });
+    return apiError(400, "Invalid or expired code.", { code: "INVALID_OTP" });
   }
 
   const passwordHash = await hashPassword(parsed.data.password);

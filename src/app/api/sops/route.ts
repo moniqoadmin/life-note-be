@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { createSopSchema } from "@/lib/validation";
 import { getMembership, userSelect } from "@/lib/workspaces";
+import { apiError, validationError } from "@/lib/api";
 
 /**
  * @swagger
@@ -73,13 +74,13 @@ import { getMembership, userSelect } from "@/lib/workspaces";
 export async function GET(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
 
   const workspaceId = new URL(req.url).searchParams.get("workspaceId");
   if (workspaceId && !(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const sops = await prisma.sop.findMany({
@@ -94,23 +95,20 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
 
   const body = await req.json().catch(() => null);
   const parsed = createSopSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-      { status: 400 }
-    );
+    return validationError(parsed.error);
   }
 
   const { title, content, workspaceId } = parsed.data;
 
   if (workspaceId && !(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const sop = await prisma.sop.create({

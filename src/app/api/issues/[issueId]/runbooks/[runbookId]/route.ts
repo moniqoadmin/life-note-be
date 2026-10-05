@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateRunbookSchema } from "@/lib/validation";
 import { getAccessibleIssue, getRunbook, withRunbookProgress } from "@/lib/issues";
 
@@ -73,17 +73,17 @@ type Params = { params: Promise<{ issueId: string; runbookId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, runbookId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const runbook = await getRunbook(issueId, runbookId);
   if (!runbook) {
-    return NextResponse.json({ error: "Runbook not found" }, { status: 404 });
+    return apiError(404, "Runbook not found");
   }
 
   return NextResponse.json({ runbook: withRunbookProgress(runbook) });
@@ -92,16 +92,16 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, runbookId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   if (!(await getRunbook(issueId, runbookId))) {
-    return NextResponse.json({ error: "Runbook not found" }, { status: 404 });
+    return apiError(404, "Runbook not found");
   }
 
   const parsed = await parseJsonBody(req, updateRunbookSchema);
@@ -116,17 +116,17 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, runbookId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const { count } = await prisma.issueRunbook.deleteMany({ where: { id: runbookId, issueId } });
   if (count === 0) {
-    return NextResponse.json({ error: "Runbook not found" }, { status: 404 });
+    return apiError(404, "Runbook not found");
   }
 
   return NextResponse.json({ message: "Runbook detached" });

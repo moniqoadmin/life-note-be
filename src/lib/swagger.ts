@@ -78,7 +78,26 @@ export const getApiDocs = () => {
           Error: {
             type: "object",
             properties: {
-              error: { type: "string" },
+              error: {
+                type: "object",
+                required: ["code", "message"],
+                properties: {
+                  code: {
+                    type: "string",
+                    description:
+                      "Stable machine-readable code, e.g. VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, RATE_LIMITED, INVALID_CREDENTIALS, EMAIL_NOT_VERIFIED, INVALID_OTP, OTP_COOLDOWN, INTERNAL_ERROR.",
+                  },
+                  message: { type: "string", description: "Human-readable message." },
+                  details: {
+                    type: "array",
+                    description: "Per-field issues (VALIDATION_ERROR only).",
+                    items: {
+                      type: "object",
+                      properties: { path: { type: "string" }, message: { type: "string" } },
+                    },
+                  },
+                },
+              },
             },
           },
           Message: {

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { getAccessibleIssue, recordActivity } from "@/lib/issues";
+import { apiError } from "@/lib/api";
 
 type Params = { params: Promise<{ issueId: string; relationId: string }> };
 
@@ -24,20 +25,20 @@ type Params = { params: Promise<{ issueId: string; relationId: string }> };
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, relationId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const relation = await prisma.issueRelation.findFirst({
     where: { id: relationId, OR: [{ fromIssueId: issueId }, { toIssueId: issueId }] },
     include: { fromIssue: { select: { key: true } }, toIssue: { select: { key: true } } },
   });
   if (!relation) {
-    return NextResponse.json({ error: "Relation not found" }, { status: 404 });
+    return apiError(404, "Relation not found");
   }
 
   const other = relation.fromIssueId === issueId ? relation.toIssue : relation.fromIssue;

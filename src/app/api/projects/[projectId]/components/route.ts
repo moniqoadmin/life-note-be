@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createComponentSchema } from "@/lib/validation";
 import { getAccessibleProject } from "@/lib/workspaces";
 
@@ -59,13 +59,13 @@ type Params = { params: Promise<{ projectId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { projectId } = await params;
 
   if (!(await getAccessibleProject(userId, projectId))) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    return apiError(404, "Project not found");
   }
 
   const components = await prisma.component.findMany({
@@ -79,13 +79,13 @@ export async function GET(_req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { projectId } = await params;
 
   if (!(await getAccessibleProject(userId, projectId))) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    return apiError(404, "Project not found");
   }
 
   const parsed = await parseJsonBody(req, createComponentSchema);
@@ -96,7 +96,7 @@ export async function POST(req: Request, { params }: Params) {
     where: { projectId_name: { projectId, name } },
   });
   if (duplicate) {
-    return NextResponse.json({ error: "A component with this name already exists" }, { status: 409 });
+    return apiError(409, "A component with this name already exists");
   }
 
   const component = await prisma.component.create({ data: { projectId, name, description } });

@@ -3,6 +3,46 @@ import type { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { RateLimitError } from "@/lib/rate-limit";
 
+// Standard error body for every API route:
+//   { "error": { "code": "NOT_FOUND", "message": "Issue not found", "details"?: [...] } }
+// `code` is stable and machine-readable (clients branch on it); `message` is
+// human-readable and may change; `details` carries per-field validation issues.
+export type ApiErrorDetail = { path: string; message: string };
+export type ApiErrorBody = {
+  error: { code: string; message: string; details?: ApiErrorDetail[] };
+};
+
+const DEFAULT_ERROR_CODES: Record<number, string> = {
+  400: "BAD_REQUEST",
+  401: "UNAUTHORIZED",
+  403: "FORBIDDEN",
+  404: "NOT_FOUND",
+  409: "CONFLICT",
+  413: "PAYLOAD_TOO_LARGE",
+  429: "RATE_LIMITED",
+  500: "INTERNAL_ERROR",
+};
+
+export function apiError(
+  status: number,
+  message: string,
+  options: { code?: string; details?: ApiErrorDetail[]; headers?: HeadersInit } = {}
+): NextResponse<ApiErrorBody> {
+  const code = options.code ?? DEFAULT_ERROR_CODES[status] ?? "ERROR";
+  return NextResponse.json(
+    { error: { code, message, ...(options.details && { details: options.details }) } },
+    { status, headers: options.headers }
+  );
+}
+
+/** 400 VALIDATION_ERROR with every zod issue listed in `details`. */
+export function validationError(error: z.ZodError): NextResponse<ApiErrorBody> {
+  return apiError(400, error.issues[0]?.message ?? "Invalid input", {
+    code: "VALIDATION_ERROR",
+    details: error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+  });
+}
+
 type ParsedBody<T> = { success: true; data: T } | { success: false; response: NextResponse };
 
 /**
@@ -19,13 +59,7 @@ export async function parseJsonBody<T>(req: Request, schema: z.ZodType<T>): Prom
   const body = await req.json().catch(() => null);
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
-    return {
-      success: false,
-      response: NextResponse.json(
-        { error: parsed.error.issues[0]?.message ?? "Invalid input" },
-        { status: 400 }
-      ),
-    };
+    return { success: false, response: validationError(parsed.error) };
   }
   return { success: true, data: parsed.data };
 }
@@ -47,27 +81,17 @@ export function withApiErrorHandling(handler: (req: Request) => Promise<NextResp
       return await handler(req);
     } catch (err) {
       if (err instanceof RateLimitError) {
-        return NextResponse.json(
-          { error: "Too many requests. Please try again later." },
-          {
-            status: 429,
-            headers: { "Retry-After": String(Math.ceil(err.retryAfterMs / 1000)) },
-          }
-        );
+        return apiError(429, "Too many requests. Please try again later.", {
+          headers: { "Retry-After": String(Math.ceil(err.retryAfterMs / 1000)) },
+        });
       }
 
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-        return NextResponse.json(
-          { error: "A record with these details already exists." },
-          { status: 409 }
-        );
+        return apiError(409, "A record with these details already exists.");
       }
 
       console.error("Unhandled API error:", err);
-      return NextResponse.json(
-        { error: "Something went wrong. Please try again." },
-        { status: 500 }
-      );
+      return apiError(500, "Something went wrong. Please try again.");
     }
   };
 }

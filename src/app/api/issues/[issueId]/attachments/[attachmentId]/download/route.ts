@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { getAccessibleIssue } from "@/lib/issues";
 import { contentDisposition } from "@/lib/attachments";
+import { apiError } from "@/lib/api";
 
 type Params = { params: Promise<{ issueId: string; attachmentId: string }> };
 
@@ -33,19 +34,19 @@ type Params = { params: Promise<{ issueId: string; attachmentId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, attachmentId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const attachment = await prisma.issueAttachment.findFirst({
     where: { id: attachmentId, issueId },
   });
   if (!attachment) {
-    return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
+    return apiError(404, "Attachment not found");
   }
 
   if (attachment.storage === "LINK") {
@@ -54,7 +55,7 @@ export async function GET(_req: Request, { params }: Params) {
 
   const blob = await prisma.attachmentBlob.findUnique({ where: { attachmentId } });
   if (!blob) {
-    return NextResponse.json({ error: "Attachment not found" }, { status: 404 });
+    return apiError(404, "Attachment not found");
   }
 
   return new NextResponse(Buffer.from(blob.data), {

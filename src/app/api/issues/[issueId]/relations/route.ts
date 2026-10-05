@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createRelationSchema } from "@/lib/validation";
 import {
   getAccessibleIssue,
@@ -78,13 +78,13 @@ const NORMALIZED = {
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const relations = await listRelations(issueId);
@@ -94,14 +94,14 @@ export async function GET(_req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId } = await params;
 
   const issue = await getAccessibleIssue(userId, issueId);
   if (!issue) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
 
   const parsed = await parseJsonBody(req, createRelationSchema);
@@ -109,14 +109,14 @@ export async function POST(req: Request, { params }: Params) {
   const { targetIssueId } = parsed.data;
 
   if (targetIssueId === issueId) {
-    return NextResponse.json({ error: "An issue can't be linked to itself" }, { status: 400 });
+    return apiError(400, "An issue can't be linked to itself");
   }
   const target = await prisma.issue.findFirst({
     where: { id: targetIssueId, workspaceId: issue.workspaceId },
     select: issueRefSelect,
   });
   if (!target) {
-    return NextResponse.json({ error: "Target issue not found" }, { status: 404 });
+    return apiError(404, "Target issue not found");
   }
 
   const { type, flip } = NORMALIZED[parsed.data.type];
@@ -134,7 +134,7 @@ export async function POST(req: Request, { params }: Params) {
     },
   });
   if (duplicate) {
-    return NextResponse.json({ error: "These issues are already linked" }, { status: 409 });
+    return apiError(409, "These issues are already linked");
   }
 
   const relation = await prisma.$transaction(async (tx) => {

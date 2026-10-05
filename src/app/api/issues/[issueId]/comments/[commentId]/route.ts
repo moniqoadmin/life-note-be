@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateCommentSchema } from "@/lib/validation";
 import { canManageWorkspace, getMembership, userSelect } from "@/lib/workspaces";
 import { getAccessibleIssue } from "@/lib/issues";
@@ -64,21 +64,21 @@ type Params = { params: Promise<{ issueId: string; commentId: string }> };
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, commentId } = await params;
 
   const issue = await getAccessibleIssue(userId, issueId);
   if (!issue) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const existing = await prisma.issueComment.findFirst({ where: { id: commentId, issueId } });
   if (!existing) {
-    return NextResponse.json({ error: "Comment not found" }, { status: 404 });
+    return apiError(404, "Comment not found");
   }
   if (existing.authorId !== userId) {
-    return NextResponse.json({ error: "Only the author can edit a comment" }, { status: 403 });
+    return apiError(403, "Only the author can edit a comment");
   }
 
   const parsed = await parseJsonBody(req, updateCommentSchema);
@@ -115,26 +115,23 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, commentId } = await params;
 
   const issue = await getAccessibleIssue(userId, issueId);
   if (!issue) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const existing = await prisma.issueComment.findFirst({ where: { id: commentId, issueId } });
   if (!existing) {
-    return NextResponse.json({ error: "Comment not found" }, { status: 404 });
+    return apiError(404, "Comment not found");
   }
   if (existing.authorId !== userId) {
     const membership = await getMembership(userId, issue.workspaceId);
     if (!membership || !canManageWorkspace(membership.role)) {
-      return NextResponse.json(
-        { error: "Only the author, owners and admins can delete a comment" },
-        { status: 403 }
-      );
+      return apiError(403, "Only the author, owners and admins can delete a comment");
     }
   }
 

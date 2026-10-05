@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateRunbookStepSchema } from "@/lib/validation";
 import { getAccessibleIssue, getRunbook, recordActivity, withRunbookProgress } from "@/lib/issues";
 
@@ -58,21 +58,21 @@ const isFinished = (status: string) => status === "VERIFIED" || status === "SKIP
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, runbookId, stepId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const runbook = await getRunbook(issueId, runbookId);
   if (!runbook) {
-    return NextResponse.json({ error: "Runbook not found" }, { status: 404 });
+    return apiError(404, "Runbook not found");
   }
   const step = runbook.steps.find((s) => s.id === stepId);
   if (!step) {
-    return NextResponse.json({ error: "Step not found" }, { status: 404 });
+    return apiError(404, "Step not found");
   }
 
   const parsed = await parseJsonBody(req, updateRunbookStepSchema);
@@ -87,26 +87,17 @@ export async function PATCH(req: Request, { params }: Params) {
     if (status !== "PENDING") {
       const blocker = earlier.find((s) => !isFinished(s.status));
       if (blocker) {
-        return NextResponse.json(
-          { error: `Finish step ${blocker.position + 1} ("${blocker.title}") first` },
-          { status: 409 }
-        );
+        return apiError(409, `Finish step ${blocker.position + 1} ("${blocker.title}") first`);
       }
     }
     if (!isFinished(status)) {
       const started = later.find((s) => s.status !== "PENDING");
       if (started) {
-        return NextResponse.json(
-          { error: `Step ${started.position + 1} has already started; reset it first` },
-          { status: 409 }
-        );
+        return apiError(409, `Step ${started.position + 1} has already started; reset it first`);
       }
     }
     if (status === "VERIFIED" && step.requiresSignoff && !(notes ?? step.notes).trim()) {
-      return NextResponse.json(
-        { error: "This step requires sign-off notes before it can be verified" },
-        { status: 400 }
-      );
+      return apiError(400, "This step requires sign-off notes before it can be verified");
     }
   }
 

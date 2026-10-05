@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { addMemberSchema } from "@/lib/validation";
 import { canManageWorkspace, getMembership, userSelect } from "@/lib/workspaces";
 
@@ -63,13 +63,13 @@ type Params = { params: Promise<{ workspaceId: string }> };
 export async function GET(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   if (!(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const q = new URL(req.url).searchParams.get("q")?.trim().slice(0, 100);
@@ -96,17 +96,17 @@ export async function GET(req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   const membership = await getMembership(userId, workspaceId);
   if (!membership) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
   if (!canManageWorkspace(membership.role)) {
-    return NextResponse.json({ error: "Only owners and admins can do this" }, { status: 403 });
+    return apiError(403, "Only owners and admins can do this");
   }
 
   const parsed = await parseJsonBody(req, addMemberSchema);
@@ -115,10 +115,10 @@ export async function POST(req: Request, { params }: Params) {
 
   const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
   if (!user) {
-    return NextResponse.json({ error: "No user with that email" }, { status: 404 });
+    return apiError(404, "No user with that email");
   }
   if (await getMembership(user.id, workspaceId)) {
-    return NextResponse.json({ error: "User is already a member" }, { status: 409 });
+    return apiError(409, "User is already a member");
   }
 
   const member = await prisma.workspaceMember.create({

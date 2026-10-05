@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateMemberSchema } from "@/lib/validation";
 import { canManageWorkspace, getMembership, userSelect } from "@/lib/workspaces";
 
@@ -57,25 +57,25 @@ type Params = { params: Promise<{ workspaceId: string; userId: string }> };
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const callerId = session.user.id;
   const { workspaceId, userId } = await params;
 
   const membership = await getMembership(callerId, workspaceId);
   if (!membership) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
   if (!canManageWorkspace(membership.role)) {
-    return NextResponse.json({ error: "Only owners and admins can do this" }, { status: 403 });
+    return apiError(403, "Only owners and admins can do this");
   }
 
   const target = await getMembership(userId, workspaceId);
   if (!target) {
-    return NextResponse.json({ error: "Member not found" }, { status: 404 });
+    return apiError(404, "Member not found");
   }
   if (target.role === "OWNER") {
-    return NextResponse.json({ error: "The owner's role can't be changed" }, { status: 403 });
+    return apiError(403, "The owner's role can't be changed");
   }
 
   const parsed = await parseJsonBody(req, updateMemberSchema);
@@ -93,28 +93,25 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const callerId = session.user.id;
   const { workspaceId, userId } = await params;
 
   const membership = await getMembership(callerId, workspaceId);
   if (!membership) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const target = await getMembership(userId, workspaceId);
   if (!target) {
-    return NextResponse.json({ error: "Member not found" }, { status: 404 });
+    return apiError(404, "Member not found");
   }
   if (target.role === "OWNER") {
-    return NextResponse.json(
-      { error: "The owner can't be removed; delete the workspace instead" },
-      { status: 403 }
-    );
+    return apiError(403, "The owner can't be removed; delete the workspace instead");
   }
   if (userId !== callerId && !canManageWorkspace(membership.role)) {
-    return NextResponse.json({ error: "Only owners and admins can do this" }, { status: 403 });
+    return apiError(403, "Only owners and admins can do this");
   }
 
   await prisma.$transaction([

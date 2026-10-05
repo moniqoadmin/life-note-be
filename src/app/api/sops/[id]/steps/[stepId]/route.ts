@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateSopStepSchema } from "@/lib/validation";
 import { getAccessibleSop } from "@/lib/sops";
 import { reorder } from "@/lib/issues";
@@ -59,16 +59,16 @@ type Params = { params: Promise<{ id: string; stepId: string }> };
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id, stepId } = await params;
 
   if (!(await getAccessibleSop(userId, id))) {
-    return NextResponse.json({ error: "SOP not found" }, { status: 404 });
+    return apiError(404, "SOP not found");
   }
   if (!(await prisma.sopStep.findFirst({ where: { id: stepId, sopId: id } }))) {
-    return NextResponse.json({ error: "Step not found" }, { status: 404 });
+    return apiError(404, "Step not found");
   }
 
   const parsed = await parseJsonBody(req, updateSopStepSchema);
@@ -97,16 +97,16 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { id, stepId } = await params;
 
   if (!(await getAccessibleSop(userId, id))) {
-    return NextResponse.json({ error: "SOP not found" }, { status: 404 });
+    return apiError(404, "SOP not found");
   }
   if (!(await prisma.sopStep.findFirst({ where: { id: stepId, sopId: id } }))) {
-    return NextResponse.json({ error: "Step not found" }, { status: 404 });
+    return apiError(404, "Step not found");
   }
 
   await prisma.$transaction(async (tx) => {

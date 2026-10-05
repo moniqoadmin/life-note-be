@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateCriterionSchema } from "@/lib/validation";
 import { getAccessibleIssue, reorder } from "@/lib/issues";
 
@@ -55,19 +55,19 @@ type Params = { params: Promise<{ issueId: string; criterionId: string }> };
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, criterionId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const existing = await prisma.acceptanceCriterion.findFirst({
     where: { id: criterionId, issueId },
   });
   if (!existing) {
-    return NextResponse.json({ error: "Criterion not found" }, { status: 404 });
+    return apiError(404, "Criterion not found");
   }
 
   const parsed = await parseJsonBody(req, updateCriterionSchema);
@@ -101,19 +101,19 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { issueId, criterionId } = await params;
 
   if (!(await getAccessibleIssue(userId, issueId))) {
-    return NextResponse.json({ error: "Issue not found" }, { status: 404 });
+    return apiError(404, "Issue not found");
   }
   const { count } = await prisma.acceptanceCriterion.deleteMany({
     where: { id: criterionId, issueId },
   });
   if (count === 0) {
-    return NextResponse.json({ error: "Criterion not found" }, { status: 404 });
+    return apiError(404, "Criterion not found");
   }
 
   return NextResponse.json({ message: "Criterion deleted" });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateSprintSchema } from "@/lib/validation";
 import { getAccessibleSprint } from "@/lib/workspaces";
 import { getPlanningStats } from "@/lib/planning";
@@ -80,14 +80,14 @@ type Params = { params: Promise<{ sprintId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { sprintId } = await params;
 
   const sprint = await getAccessibleSprint(userId, sprintId);
   if (!sprint) {
-    return NextResponse.json({ error: "Sprint not found" }, { status: 404 });
+    return apiError(404, "Sprint not found");
   }
 
   const stats = await getPlanningStats({ sprintId: sprintId });
@@ -97,14 +97,14 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { sprintId } = await params;
 
   const existing = await getAccessibleSprint(userId, sprintId);
   if (!existing) {
-    return NextResponse.json({ error: "Sprint not found" }, { status: 404 });
+    return apiError(404, "Sprint not found");
   }
 
   const parsed = await parseJsonBody(req, updateSprintSchema);
@@ -114,7 +114,7 @@ export async function PATCH(req: Request, { params }: Params) {
   const nextStartDate = startDate !== undefined ? startDate : existing.startDate;
   const nextEndDate = endDate !== undefined ? endDate : existing.endDate;
   if (nextStartDate && nextEndDate && nextStartDate > nextEndDate) {
-    return NextResponse.json({ error: "startDate must be before endDate" }, { status: 400 });
+    return apiError(400, "startDate must be before endDate");
   }
 
   if (status === "ACTIVE" && existing.status !== "ACTIVE") {
@@ -122,7 +122,7 @@ export async function PATCH(req: Request, { params }: Params) {
       where: { workspaceId: existing.workspaceId, status: "ACTIVE", id: { not: sprintId } },
     });
     if (active) {
-      return NextResponse.json({ error: `"${active.name}" is already active` }, { status: 409 });
+      return apiError(409, `"${active.name}" is already active`);
     }
   }
 
@@ -143,13 +143,13 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { sprintId } = await params;
 
   if (!(await getAccessibleSprint(userId, sprintId))) {
-    return NextResponse.json({ error: "Sprint not found" }, { status: 404 });
+    return apiError(404, "Sprint not found");
   }
 
   await prisma.sprint.delete({ where: { id: sprintId } });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateProjectSchema } from "@/lib/validation";
 import {
   canManageWorkspace,
@@ -87,13 +87,13 @@ type Params = { params: Promise<{ projectId: string }> };
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { projectId } = await params;
 
   if (!(await getAccessibleProject(userId, projectId))) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    return apiError(404, "Project not found");
   }
 
   const [project, grouped] = await Promise.all([
@@ -104,7 +104,7 @@ export async function GET(_req: Request, { params }: Params) {
     prisma.issue.groupBy({ by: ["status"], where: { projectId }, _count: { _all: true } }),
   ]);
   if (!project) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    return apiError(404, "Project not found");
   }
 
   const statusCounts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
@@ -114,14 +114,14 @@ export async function GET(_req: Request, { params }: Params) {
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { projectId } = await params;
 
   const existing = await getAccessibleProject(userId, projectId);
   if (!existing) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    return apiError(404, "Project not found");
   }
 
   const parsed = await parseJsonBody(req, updateProjectSchema);
@@ -129,7 +129,7 @@ export async function PATCH(req: Request, { params }: Params) {
   const { name, description, color, leadId } = parsed.data;
 
   if (leadId && !(await isWorkspaceMember(existing.workspaceId, leadId))) {
-    return NextResponse.json({ error: "Lead is not a member of this workspace" }, { status: 400 });
+    return apiError(400, "Lead is not a member of this workspace");
   }
 
   const project = await prisma.project.update({
@@ -148,18 +148,18 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { projectId } = await params;
 
   const existing = await getAccessibleProject(userId, projectId);
   if (!existing) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    return apiError(404, "Project not found");
   }
   const membership = await getMembership(userId, existing.workspaceId);
   if (!membership || !canManageWorkspace(membership.role)) {
-    return NextResponse.json({ error: "Only owners and admins can do this" }, { status: 403 });
+    return apiError(403, "Only owners and admins can do this");
   }
 
   await prisma.project.delete({ where: { id: projectId } });

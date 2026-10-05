@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { updateNotificationSchema } from "@/lib/validation";
 
 type Params = { params: Promise<{ notificationId: string }> };
@@ -50,14 +50,14 @@ type Params = { params: Promise<{ notificationId: string }> };
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { notificationId } = await params;
 
   const existing = await prisma.notification.findFirst({ where: { id: notificationId, userId } });
   if (!existing) {
-    return NextResponse.json({ error: "Notification not found" }, { status: 404 });
+    return apiError(404, "Notification not found");
   }
 
   const parsed = await parseJsonBody(req, updateNotificationSchema);
@@ -74,14 +74,14 @@ export async function PATCH(req: Request, { params }: Params) {
 export async function DELETE(_req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { notificationId } = await params;
 
   const { count } = await prisma.notification.deleteMany({ where: { id: notificationId, userId } });
   if (count === 0) {
-    return NextResponse.json({ error: "Notification not found" }, { status: 404 });
+    return apiError(404, "Notification not found");
   }
 
   return NextResponse.json({ message: "Notification dismissed" });

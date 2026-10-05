@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody } from "@/lib/api";
+import { parseJsonBody, apiError } from "@/lib/api";
 import { createEpicSchema, epicStatusSchema } from "@/lib/validation";
 import { getMembership } from "@/lib/workspaces";
 
@@ -73,19 +73,19 @@ type Params = { params: Promise<{ workspaceId: string }> };
 export async function GET(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   if (!(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const statusParam = new URL(req.url).searchParams.get("status");
   const statusParsed = statusParam ? epicStatusSchema.safeParse(statusParam) : null;
   if (statusParam && !statusParsed?.success) {
-    return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+    return apiError(400, "Invalid status");
   }
 
   const epics = await prisma.epic.findMany({
@@ -100,13 +100,13 @@ export async function GET(req: Request, { params }: Params) {
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return apiError(401, "Unauthorized");
   }
   const userId = session.user.id;
   const { workspaceId } = await params;
 
   if (!(await getMembership(userId, workspaceId))) {
-    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    return apiError(404, "Workspace not found");
   }
 
   const parsed = await parseJsonBody(req, createEpicSchema);
@@ -114,7 +114,7 @@ export async function POST(req: Request, { params }: Params) {
   const { name, description, color, status, startDate, targetDate } = parsed.data;
 
   if (startDate && targetDate && startDate > targetDate) {
-    return NextResponse.json({ error: "startDate must be before targetDate" }, { status: 400 });
+    return apiError(400, "startDate must be before targetDate");
   }
 
   const epic = await prisma.epic.create({
