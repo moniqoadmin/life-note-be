@@ -23,6 +23,7 @@ model User {
   sessions  Session[]
   otpTokens OtpToken[]
   notes     Note[]
+  comments  NoteComment[]
 
   @@map("users")
 }
@@ -120,9 +121,16 @@ model Note {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parent   Note?  @relation("NoteHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
-  children Note[] @relation("NoteHierarchy")
+  // Issue-tracker fields shown in the issue detail view.
+  status   IssueStatus   @default(TODO)
+  priority IssuePriority @default(MEDIUM)
+  labels   String[]      @default([])
+
+  user     User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent   Note?                 @relation("NoteHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children Note[]                @relation("NoteHierarchy")
+  criteria AcceptanceCriterion[]
+  comments NoteComment[]
 
   // Postgres-maintained generated tsvector column (title + content), kept in sync by the
   // DB on every write — see prisma/sql/notes-search-setup.sql for the GENERATED/GIN setup
@@ -134,5 +142,55 @@ model Note {
   @@index([userId, parentId])
   // Covers "most recently touched notes" style listing/ordering.
   @@index([userId, updatedAt])
+  // Covers board/filter views that group a user's issues by status.
+  @@index([userId, status])
   @@map("notes")
+}
+
+enum IssueStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
+
+enum IssuePriority {
+  URGENT
+  HIGH
+  MEDIUM
+  LOW
+}
+
+// Checklist items under an issue's "Acceptance Criteria". Ordered by `position`
+// (appended items get max+1), so reordering later only touches the moved rows.
+model AcceptanceCriterion {
+  id        String   @id @default(cuid())
+  noteId    String
+  text      String
+  done      Boolean  @default(false)
+  position  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  note Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId, position])
+  @@map("acceptance_criteria")
+}
+
+// Activity-feed comments on an issue. `authorId` is kept separate from the note's
+// owner so shared workspaces can add other commenters later without a migration.
+model NoteComment {
+  id        String   @id @default(cuid())
+  noteId    String
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  note   Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([noteId, createdAt])
+  @@map("note_comments")
 }

@@ -49,8 +49,51 @@ export const getApiDocs = () => {
               parentId: { type: "string", nullable: true },
               title: { type: "string" },
               content: { type: "string" },
+              status: { $ref: "#/components/schemas/IssueStatus" },
+              priority: { $ref: "#/components/schemas/IssuePriority" },
+              labels: { type: "array", items: { type: "string" } },
               createdAt: { type: "string", format: "date-time" },
               updatedAt: { type: "string", format: "date-time" },
+            },
+          },
+          IssueStatus: {
+            type: "string",
+            enum: ["TODO", "IN_PROGRESS", "IN_REVIEW", "DONE"],
+          },
+          IssuePriority: {
+            type: "string",
+            enum: ["URGENT", "HIGH", "MEDIUM", "LOW"],
+          },
+          AcceptanceCriterion: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              noteId: { type: "string" },
+              text: { type: "string" },
+              done: { type: "boolean" },
+              position: { type: "integer" },
+              createdAt: { type: "string", format: "date-time" },
+              updatedAt: { type: "string", format: "date-time" },
+            },
+          },
+          NoteComment: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              noteId: { type: "string" },
+              authorId: { type: "string" },
+              body: { type: "string" },
+              createdAt: { type: "string", format: "date-time" },
+              updatedAt: { type: "string", format: "date-time" },
+              author: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  name: { type: "string", nullable: true },
+                  email: { type: "string" },
+                  image: { type: "string", nullable: true },
+                },
+              },
             },
           },
           NoteSummary: {
@@ -59,6 +102,10 @@ export const getApiDocs = () => {
               id: { type: "string" },
               title: { type: "string" },
               parentId: { type: "string", nullable: true },
+              status: {
+                allOf: [{ $ref: "#/components/schemas/IssueStatus" }],
+                description: "Present on a note's children via GET /notes/{id}.",
+              },
               createdAt: { type: "string", format: "date-time" },
               updatedAt: { type: "string", format: "date-time" },
               childCount: {
