@@ -31,7 +31,7 @@ export const corsErrors = {
 /**
  * Check if origin is allowed
  */
-export function isOriginAllowed(origin: string | null): boolean {
+export function isOriginAllowed(origin: string | null): origin is string {
   if (!origin) return false;
   return ALLOWED_ORIGINS.includes(origin);
 }
