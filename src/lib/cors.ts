@@ -3,8 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 export const ALLOWED_ORIGINS = [
   "http://localhost:3000",
   "http://localhost:3001",
-  "https://yourdomain.com",
-  // Add your production domains here
+  "http://localhost:5173",
+  "https://life-note-r-production.up.railway.app"
 ];
 
 /**
