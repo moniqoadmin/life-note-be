@@ -37,6 +37,9 @@ export class RateLimitedSignin extends CredentialsSignin {
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
   secret: env.AUTH_SECRET,
+  // Railway serves the app behind a proxy; without this Auth.js rejects the
+  // forwarded host with UntrustedHost ("server configuration" 500).
+  trustHost: true,
   session: {
     strategy: "jwt",
     maxAge: 30 * 24 * 60 * 60, // 30 days
