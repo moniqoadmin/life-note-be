@@ -1,16 +1,14 @@
 -- Note issue fields: status/priority/labels on notes, plus note_criteria and
--- note_comments tables. Run ONCE against an existing database (e.g. Supabase SQL
--- editor) before deploying the code that reads these columns. Generated with
--- `prisma migrate diff` from the previous schema; it only adds, never drops.
+-- note_comments tables. Run against an existing database (e.g. Supabase SQL editor)
+-- before deploying the code that reads these columns. Only adds, never drops, and is
+-- safe to re-run: anything that already exists (e.g. from an earlier `db push`) is skipped.
 -- The IssueStatus/IssuePriority enums must already exist (created with the issues tables).
 
--- AlterTable
-ALTER TABLE "notes" ADD COLUMN     "labels" TEXT[] DEFAULT ARRAY[]::TEXT[],
-ADD COLUMN     "priority" "IssuePriority" NOT NULL DEFAULT 'MEDIUM',
-ADD COLUMN     "status" "IssueStatus" NOT NULL DEFAULT 'TODO';
+ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "labels" TEXT[] DEFAULT ARRAY[]::TEXT[];
+ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "priority" "IssuePriority" NOT NULL DEFAULT 'MEDIUM';
+ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "status" "IssueStatus" NOT NULL DEFAULT 'TODO';
 
--- CreateTable
-CREATE TABLE "note_criteria" (
+CREATE TABLE IF NOT EXISTS "note_criteria" (
     "id" TEXT NOT NULL,
     "noteId" TEXT NOT NULL,
     "text" TEXT NOT NULL,
@@ -22,8 +20,7 @@ CREATE TABLE "note_criteria" (
     CONSTRAINT "note_criteria_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "note_comments" (
+CREATE TABLE IF NOT EXISTS "note_comments" (
     "id" TEXT NOT NULL,
     "noteId" TEXT NOT NULL,
     "authorId" TEXT NOT NULL,
@@ -34,21 +31,20 @@ CREATE TABLE "note_comments" (
     CONSTRAINT "note_comments_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE INDEX "note_criteria_noteId_position_idx" ON "note_criteria"("noteId", "position");
+CREATE INDEX IF NOT EXISTS "note_criteria_noteId_position_idx" ON "note_criteria"("noteId", "position");
+CREATE INDEX IF NOT EXISTS "note_comments_noteId_createdAt_idx" ON "note_comments"("noteId", "createdAt");
+CREATE INDEX IF NOT EXISTS "notes_userId_status_idx" ON "notes"("userId", "status");
 
--- CreateIndex
-CREATE INDEX "note_comments_noteId_createdAt_idx" ON "note_comments"("noteId", "createdAt");
-
--- CreateIndex
-CREATE INDEX "notes_userId_status_idx" ON "notes"("userId", "status");
-
--- AddForeignKey
-ALTER TABLE "note_criteria" ADD CONSTRAINT "note_criteria_noteId_fkey" FOREIGN KEY ("noteId") REFERENCES "notes"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "note_comments" ADD CONSTRAINT "note_comments_noteId_fkey" FOREIGN KEY ("noteId") REFERENCES "notes"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "note_comments" ADD CONSTRAINT "note_comments_authorId_fkey" FOREIGN KEY ("authorId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
+-- Postgres has no ADD CONSTRAINT IF NOT EXISTS, so check pg_constraint first.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'note_criteria_noteId_fkey') THEN
+    ALTER TABLE "note_criteria" ADD CONSTRAINT "note_criteria_noteId_fkey" FOREIGN KEY ("noteId") REFERENCES "notes"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'note_comments_noteId_fkey') THEN
+    ALTER TABLE "note_comments" ADD CONSTRAINT "note_comments_noteId_fkey" FOREIGN KEY ("noteId") REFERENCES "notes"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'note_comments_authorId_fkey') THEN
+    ALTER TABLE "note_comments" ADD CONSTRAINT "note_comments_authorId_fkey" FOREIGN KEY ("authorId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
