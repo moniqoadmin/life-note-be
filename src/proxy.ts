@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { isOriginAllowed } from "@/lib/cors";
 
 const PROTECTED_PREFIXES = ["/dashboard"];
 
-// CORS for /api/*. The SPA sends credentialed requests (cookies), and browsers
-// reject `Access-Control-Allow-Origin: *` for those, so instead of "*" we echo
-// back whatever Origin made the request — i.e. all origins are allowed.
 function withCors(req: Request, res: NextResponse) {
   const origin = req.headers.get("origin");
-  if (origin) {
+  if (isOriginAllowed(origin)) {
     res.headers.set("Access-Control-Allow-Origin", origin);
     res.headers.set("Access-Control-Allow-Credentials", "true");
     res.headers.append("Vary", "Origin");

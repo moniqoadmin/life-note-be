@@ -34,7 +34,22 @@ export class RateLimitedSignin extends CredentialsSignin {
   code = "rate_limited";
 }
 
+// The SPA and this API live on different *.up.railway.app hosts, which browsers
+// treat as separate sites (public suffix), so Auth.js's default SameSite=Lax
+// cookies are dropped on the SPA's cross-site fetches (-> MissingCSRF, no
+// session). SameSite=None requires Secure, so only apply it in production.
+const isProd = env.NODE_ENV === "production";
+const crossSiteCookie = { httpOnly: true, sameSite: "none" as const, path: "/", secure: true };
+const cookies = isProd
+  ? {
+      sessionToken: { name: "__Secure-authjs.session-token", options: crossSiteCookie },
+      callbackUrl: { name: "__Secure-authjs.callback-url", options: crossSiteCookie },
+      csrfToken: { name: "__Host-authjs.csrf-token", options: crossSiteCookie },
+    }
+  : undefined;
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  cookies,
   adapter: PrismaAdapter(prisma),
   secret: env.AUTH_SECRET,
   // Railway serves the app behind a proxy; without this Auth.js rejects the
