@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
 import { updateRunbookStepSchema } from "@/lib/validation";
 import { getAccessibleIssue, getRunbook, recordActivity, withRunbookProgress } from "@/lib/issues";
+import { advanceRunbook, applySopRules, recordRunbookEvent } from "@/lib/sop-engine";
 
 type Params = { params: Promise<{ issueId: string; runbookId: string; stepId: string }> };
 
@@ -81,6 +82,9 @@ export async function PATCH(req: Request, { params }: Params) {
 
   const statusChanged = status !== undefined && status !== step.status;
   if (statusChanged) {
+    if (status === "VERIFIED" && step.type === "APPROVAL") {
+      return apiError(400, "Approval steps must be completed through the approvals endpoint");
+    }
     const earlier = runbook.steps.filter((s) => s.position < step.position);
     const later = runbook.steps.filter((s) => s.position > step.position);
 
@@ -110,12 +114,24 @@ export async function PATCH(req: Request, { params }: Params) {
         ...(executor !== undefined && { executor }),
         ...(statusChanged && {
           status,
-          completedById: isFinished(status) ? userId : null,
-          completedAt: isFinished(status) ? new Date() : null,
+          completedById: status === "PENDING" || status === "IN_PROGRESS" ? null : userId,
+          completedAt: status === "PENDING" || status === "IN_PROGRESS" ? null : new Date(),
         }),
       },
     });
     if (statusChanged) {
+      if (status === "FAILED" || status === "BLOCKED") {
+        await tx.issueRunbook.update({ where: { id: runbookId }, data: { status, currentStepId: stepId } });
+        await recordRunbookEvent(tx, runbookId, userId, `STEP_${status}`, { stepId, title: step.title, output });
+        if (status === "FAILED") await applySopRules(tx, runbookId, issueId, "STEP_FAILED", userId);
+      } else if (status === "IN_PROGRESS") {
+        await tx.issueRunbook.update({ where: { id: runbookId }, data: { status: "IN_PROGRESS", currentStepId: stepId } });
+        await recordRunbookEvent(tx, runbookId, userId, "STEP_STARTED", { stepId, title: step.title });
+      } else if (status === "VERIFIED" || status === "SKIPPED") {
+        await recordRunbookEvent(tx, runbookId, userId, status === "VERIFIED" ? "STEP_COMPLETED" : "STEP_SKIPPED", { stepId, title: step.title, notes, output });
+        await advanceRunbook(tx, runbookId, issueId, stepId, userId);
+        await applySopRules(tx, runbookId, issueId, status === "VERIFIED" ? "STEP_COMPLETED" : "STEP_SKIPPED", userId);
+      }
       await recordActivity(tx, issueId, userId, "RUNBOOK_STEP_UPDATED", {
         runbookId,
         stepId,

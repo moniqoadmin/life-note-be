@@ -75,6 +75,7 @@ export const createTaskSchema = z.object({
   content: z.string().max(50_000, "Content is too long").default(""),
   status: taskStatusSchema.default("TODO"),
   dueDate: z.coerce.date().nullable().optional(),
+  sopOverrideId: z.string().min(1).nullable().optional(),
 });
 
 export const updateTaskSchema = z
@@ -83,6 +84,7 @@ export const updateTaskSchema = z
     content: z.string().max(50_000, "Content is too long").optional(),
     status: taskStatusSchema.optional(),
     dueDate: z.coerce.date().nullable().optional(),
+    sopOverrideId: z.string().min(1).nullable().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
 
@@ -90,11 +92,35 @@ export const updateTaskSchema = z
 // SOP steps
 // ---------------------------------------------------------------------------
 
+export const sopConditionSchema: z.ZodType<unknown> = z.lazy(() => z.union([
+  z.object({ all: z.array(sopConditionSchema).min(1) }).strict(),
+  z.object({ any: z.array(sopConditionSchema).min(1) }).strict(),
+  z.object({
+    field: z.enum(["issue.type", "issue.status", "issue.priority", "issue.labels", "issue.componentId", "issue.storyPoints", "task.status", "task.title"]),
+    operator: z.enum(["EQUALS", "NOT_EQUALS", "CONTAINS", "IN", "NOT_IN", "GREATER_THAN", "LESS_THAN", "EXISTS"]),
+    value: z.unknown().optional(),
+  }).strict().refine((rule) => rule.operator === "EXISTS" || rule.value !== undefined, "value is required for this operator"),
+]));
+
+export const createSopRuleSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  trigger: z.enum(["STEP_COMPLETED", "STEP_FAILED", "STEP_SKIPPED", "ISSUE_STATUS_CHANGED"]),
+  condition: sopConditionSchema,
+  action: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("SET_ISSUE_STATUS"), status: z.enum(["BACKLOG", "TODO", "IN_PROGRESS", "IN_REVIEW", "DONE", "CANCELLED"]) }).strict(),
+    z.object({ type: z.literal("SET_RUNBOOK_STATUS"), status: z.enum(["FAILED", "BLOCKED", "SKIPPED"]) }).strict(),
+  ]),
+  enabled: z.boolean().default(true),
+});
+
 export const createSopStepSchema = z.object({
   title: z.string().min(1, "Title is required").max(200, "Title is too long"),
   description: z.string().max(10_000, "Description is too long").default(""),
   command: z.string().max(2_000, "Command is too long").nullable().optional(),
   requiresSignoff: z.boolean().default(false),
+  type: z.enum(["INSTRUCTION", "CHECKLIST", "USER_ACTION", "APPROVAL", "TESTING", "GITHUB_ACTION", "CONDITION", "CONFIRMATION", "AUTOMATED_ACTION"]).default("INSTRUCTION"),
+  config: z.record(z.string(), z.unknown()).default({}),
+  condition: sopConditionSchema.optional(),
   position: z.number().int().min(0).optional(),
 });
 
@@ -104,6 +130,9 @@ export const updateSopStepSchema = z
     description: z.string().max(10_000, "Description is too long").optional(),
     command: z.string().max(2_000, "Command is too long").nullable().optional(),
     requiresSignoff: z.boolean().optional(),
+    type: z.enum(["INSTRUCTION", "CHECKLIST", "USER_ACTION", "APPROVAL", "TESTING", "GITHUB_ACTION", "CONDITION", "CONFIRMATION", "AUTOMATED_ACTION"]).optional(),
+    config: z.record(z.string(), z.unknown()).optional(),
+    condition: sopConditionSchema.nullable().optional(),
     position: z.number().int().min(0).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
@@ -162,7 +191,7 @@ export const createComponentSchema = z.object({
 });
 
 export const updateComponentSchema = z
-  .object({ name: nameSchema.optional(), description: descriptionSchema.optional() })
+  .object({ name: nameSchema.optional(), description: descriptionSchema.optional(), defaultSopId: z.string().min(1).nullable().optional() })
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
 
 // ---------------------------------------------------------------------------
@@ -285,10 +314,11 @@ export const createIssueSchema = z.object({
   epicId: issueFields.epicId.optional(),
   sprintId: issueFields.sprintId.optional(),
   releaseId: issueFields.releaseId.optional(),
+  sopOverrideId: z.string().min(1).nullable().optional(),
 });
 
 export const updateIssueSchema = z
-  .object({ ...issueFields, position: z.number().finite() })
+  .object({ ...issueFields, position: z.number().finite(), sopOverrideId: z.string().min(1).nullable() })
   .partial()
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
 
@@ -396,12 +426,17 @@ export const updateRunbookSchema = z.object({ mode: runbookModeSchema });
 
 export const updateRunbookStepSchema = z
   .object({
-    status: z.enum(["PENDING", "IN_PROGRESS", "VERIFIED", "SKIPPED"]).optional(),
+    status: z.enum(["PENDING", "IN_PROGRESS", "VERIFIED", "FAILED", "BLOCKED", "SKIPPED"]).optional(),
     notes: z.string().max(10_000, "Notes are too long").optional(),
     output: z.string().max(50_000, "Output is too long").optional(),
     executor: z.string().max(200).nullable().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
+
+export const createRunbookApprovalSchema = z.object({
+  decision: z.enum(["APPROVED", "REJECTED"]),
+  comment: z.string().max(10_000).default(""),
+});
 
 export const workspaceSearchSchema = z.object({
   q: z.string().trim().min(1, "Search query is required").max(200, "Search query is too long"),
