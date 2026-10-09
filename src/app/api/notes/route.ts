@@ -3,6 +3,8 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { createNoteSchema } from "@/lib/validation";
 import { getOwnedNote } from "@/lib/notes";
+import { getAccessibleSop } from "@/lib/sops";
+import { ENGINE_TX_OPTIONS, syncNoteAssignment } from "@/lib/sop-engine";
 import { apiError, validationError } from "@/lib/api";
 
 /**
@@ -57,6 +59,8 @@ import { apiError, validationError } from "@/lib/api";
  *               title: { type: string }
  *               content: { type: string }
  *               parentId: { type: string, nullable: true }
+ *               sopOverrideId: { type: string, nullable: true, description: "This note's own SOP (TASK_OVERRIDE); starts/replaces its execution." }
+ *               defaultSopId: { type: string, nullable: true, description: "SOP that notes created under this one inherit (ENTITY_INHERITED)." }
  *     responses:
  *       201:
  *         description: The created note.
@@ -130,7 +134,7 @@ export async function POST(req: Request) {
     return validationError(parsed.error);
   }
 
-  const { title, content, parentId } = parsed.data;
+  const { title, content, parentId, sopOverrideId, defaultSopId } = parsed.data;
 
   if (parentId) {
     const parent = await getOwnedNote(userId, parentId);
@@ -139,9 +143,27 @@ export async function POST(req: Request) {
     }
   }
 
-  const note = await prisma.note.create({
-    data: { userId, title, content, parentId: parentId ?? null },
-  });
+  for (const sopId of [sopOverrideId, defaultSopId]) {
+    if (sopId && !(await getAccessibleSop(userId, sopId))) {
+      return apiError(400, "SOP not found");
+    }
+  }
+
+  // Inherits the nearest ancestor's default SOP (or uses its own) and starts it.
+  const note = await prisma.$transaction(async (tx) => {
+    const created = await tx.note.create({
+      data: {
+        userId,
+        title,
+        content,
+        parentId: parentId ?? null,
+        sopOverrideId: sopOverrideId ?? null,
+        defaultSopId: defaultSopId ?? null,
+      },
+    });
+    await syncNoteAssignment(tx, created.id, userId);
+    return created;
+  }, ENGINE_TX_OPTIONS);
 
   return NextResponse.json({ note }, { status: 201 });
 }

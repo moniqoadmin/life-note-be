@@ -129,7 +129,11 @@ export async function GET(_req: Request, { params }: Params) {
 
   const sop = await prisma.sop.findUnique({
     where: { id },
-    include: { steps: { orderBy: { position: "asc" } }, user: { select: userSelect } },
+    include: {
+      steps: { orderBy: { position: "asc" } },
+      rules: { orderBy: { createdAt: "asc" } },
+      user: { select: userSelect },
+    },
   });
 
   return NextResponse.json({ sop });

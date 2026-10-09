@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
+import { runEngine } from "@/lib/api";
 import { updateRunbookSchema } from "@/lib/validation";
 import { getAccessibleIssue, getRunbook, withRunbookProgress } from "@/lib/issues";
+import { ENGINE_TX_OPTIONS, updateExecution } from "@/lib/sop-engine";
 
 type Params = { params: Promise<{ issueId: string; runbookId: string }> };
 
@@ -30,8 +32,11 @@ type Params = { params: Promise<{ issueId: string; runbookId: string }> };
  *       404: { $ref: '#/components/responses/NotFound' }
  *   patch:
  *     tags: [Runbooks]
- *     summary: Switch runbook mode
- *     description: MANUAL or AUTOMATED (the "Manual" toggle).
+ *     summary: Control an execution
+ *     description: >-
+ *       Any of: switch mode (MANUAL/AUTOMATED); cancel with status SKIPPED (pending steps are skipped,
+ *       history kept); or goToStep a step key — backwards re-runs that step and everything after it
+ *       on a new attempt, forwards skips the steps in between.
  *     security: [{ CookieAuth: [] }]
  *     parameters:
  *       - $ref: '#/components/parameters/IssueId'
@@ -42,9 +47,10 @@ type Params = { params: Promise<{ issueId: string; runbookId: string }> };
  *         application/json:
  *           schema:
  *             type: object
- *             required: [mode]
  *             properties:
  *               mode: { type: string, enum: [MANUAL, AUTOMATED] }
+ *               status: { type: string, enum: [SKIPPED], description: Cancel the execution. }
+ *               goToStep: { type: string, description: Step key to jump to. }
  *     responses:
  *       200:
  *         description: The updated runbook.
@@ -107,7 +113,10 @@ export async function PATCH(req: Request, { params }: Params) {
   const parsed = await parseJsonBody(req, updateRunbookSchema);
   if (!parsed.success) return parsed.response;
 
-  await prisma.issueRunbook.update({ where: { id: runbookId }, data: { mode: parsed.data.mode } });
+  const failed = await runEngine(() =>
+    prisma.$transaction((tx) => updateExecution(tx, { runbookId, userId, ...parsed.data }), ENGINE_TX_OPTIONS)
+  );
+  if (failed) return failed;
 
   const runbook = await getRunbook(issueId, runbookId);
   return NextResponse.json({ runbook: runbook && withRunbookProgress(runbook) });

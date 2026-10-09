@@ -4,7 +4,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
 import { updateSopStepSchema } from "@/lib/validation";
-import { getAccessibleSop } from "@/lib/sops";
+import { getAccessibleSop, parseStepConfig } from "@/lib/sops";
 import { reorder } from "@/lib/issues";
 
 type Params = { params: Promise<{ id: string; stepId: string }> };
@@ -27,10 +27,14 @@ type Params = { params: Promise<{ id: string; stepId: string }> };
  *           schema:
  *             type: object
  *             properties:
+ *               key: { type: string, description: "Renaming a key does not update conditions/rules that reference it." }
  *               title: { type: string }
  *               description: { type: string }
  *               command: { type: string, nullable: true }
  *               requiresSignoff: { type: boolean }
+ *               type: { $ref: '#/components/schemas/SopStepType' }
+ *               config: { type: object, description: "Replaces the config; validated against the (new) type." }
+ *               condition: { allOf: [{ $ref: '#/components/schemas/SopCondition' }], nullable: true }
  *               position: { type: integer, minimum: 0 }
  *     responses:
  *       200:
@@ -68,16 +72,30 @@ export async function PATCH(req: Request, { params }: Params) {
   if (!(await getAccessibleSop(userId, id))) {
     return apiError(404, "SOP not found");
   }
-  if (!(await prisma.sopStep.findFirst({ where: { id: stepId, sopId: id } }))) {
+  const existing = await prisma.sopStep.findFirst({ where: { id: stepId, sopId: id } });
+  if (!existing) {
     return apiError(404, "Step not found");
   }
 
   const parsed = await parseJsonBody(req, updateSopStepSchema);
   if (!parsed.success) return parsed.response;
   const { position, config, condition, ...stepFields } = parsed.data;
+
+  // Changing the type re-validates the existing config against the new type.
+  let stepConfig: Prisma.InputJsonObject | undefined;
+  if (config !== undefined || (stepFields.type !== undefined && stepFields.type !== existing.type)) {
+    const checked = parseStepConfig(stepFields.type ?? existing.type, config ?? existing.config);
+    if (!checked.success) return apiError(400, checked.error);
+    stepConfig = checked.config;
+  }
+  if (stepFields.key && stepFields.key !== existing.key) {
+    if (await prisma.sopStep.findUnique({ where: { sopId_key: { sopId: id, key: stepFields.key } } })) {
+      return apiError(409, `A step with key "${stepFields.key}" already exists in this SOP`);
+    }
+  }
   const fields = {
     ...stepFields,
-    ...(config !== undefined && { config: config as Prisma.InputJsonValue }),
+    ...(stepConfig !== undefined && { config: stepConfig }),
     ...(condition !== undefined && { condition: condition === null ? Prisma.DbNull : condition as Prisma.InputJsonValue }),
   };
 

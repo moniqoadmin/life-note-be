@@ -3,15 +3,15 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, parseJsonBody, runEngine } from "@/lib/api";
 import { createRunbookApprovalSchema } from "@/lib/validation";
-import { getOwnedTask } from "@/lib/tasks";
-import { getTaskRunbook, withRunbookProgress } from "@/lib/issues";
+import { getOwnedNote } from "@/lib/notes";
+import { getNoteRunbook, withRunbookProgress } from "@/lib/issues";
 import { ENGINE_TX_OPTIONS, submitApproval } from "@/lib/sop-engine";
 
 type Params = { params: Promise<{ id: string; runbookId: string; stepId: string }> };
 
 /**
  * @swagger
- * /tasks/{id}/runbooks/{runbookId}/steps/{stepId}/approvals:
+ * /notes/{id}/runbooks/{runbookId}/steps/{stepId}/approvals:
  *   post:
  *     tags: [Runbooks]
  *     summary: Approve or reject an approval step
@@ -59,8 +59,8 @@ export async function POST(req: Request, { params }: Params) {
   if (!session?.user?.id) return apiError(401, "Unauthorized");
   const userId = session.user.id;
   const { id, runbookId, stepId } = await params;
-  if (!(await getOwnedTask(userId, id))) return apiError(404, "Task not found");
-  if (!(await getTaskRunbook(id, runbookId))) return apiError(404, "Execution not found");
+  if (!(await getOwnedNote(userId, id))) return apiError(404, "Note not found");
+  if (!(await getNoteRunbook(id, runbookId))) return apiError(404, "Execution not found");
   const parsed = await parseJsonBody(req, createRunbookApprovalSchema);
   if (!parsed.success) return parsed.response;
 
@@ -69,6 +69,6 @@ export async function POST(req: Request, { params }: Params) {
   );
   if (failed) return failed;
 
-  const updated = await getTaskRunbook(id, runbookId);
+  const updated = await getNoteRunbook(id, runbookId);
   return NextResponse.json({ runbook: updated && withRunbookProgress(updated) });
 }

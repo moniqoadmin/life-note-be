@@ -14,7 +14,7 @@ import {
   validateIssueRefs,
 } from "@/lib/issues";
 import { createNotifications, sendPendingEmails } from "@/lib/notifications";
-import { createAssignedRunbook } from "@/lib/sop-engine";
+import { ENGINE_TX_OPTIONS, syncIssueAssignment } from "@/lib/sop-engine";
 
 type Params = { params: Promise<{ projectId: string }> };
 
@@ -193,15 +193,9 @@ export async function POST(req: Request, { params }: Params) {
         sprintId: data.sprintId ?? null,
         releaseId: data.releaseId ?? null,
         sopOverrideId: data.sopOverrideId ?? null,
+        customFields: data.customFields,
       },
     });
-
-    const runbookId = await createAssignedRunbook(tx, issue, data.sopOverrideId);
-    if (runbookId) {
-      await recordActivity(tx, issue.id, userId, "RUNBOOK_ATTACHED", {
-        runbookId, assignmentType: data.sopOverrideId ? "TASK_OVERRIDE" : "ENTITY_INHERITED",
-      });
-    }
 
     const watcherIds = [...new Set([userId, data.assigneeId].filter((id): id is string => !!id))];
     await tx.issueWatcher.createMany({
@@ -209,6 +203,9 @@ export async function POST(req: Request, { params }: Params) {
       skipDuplicates: true,
     });
     await recordActivity(tx, issue.id, userId, "CREATED", { key: issue.key });
+
+    // Task-level override → component (entity) default SOP → none; starts the execution.
+    await syncIssueAssignment(tx, issue.id, userId);
 
     const pending = data.assigneeId
       ? await createNotifications(tx, {
@@ -220,7 +217,7 @@ export async function POST(req: Request, { params }: Params) {
       : [];
 
     return { issueId: issue.id, emails: pending };
-  });
+  }, ENGINE_TX_OPTIONS);
 
   await sendPendingEmails(emails);
 

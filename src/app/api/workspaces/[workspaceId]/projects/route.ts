@@ -107,7 +107,7 @@ export async function POST(req: Request, { params }: Params) {
 
   const parsed = await parseJsonBody(req, createProjectSchema);
   if (!parsed.success) return parsed.response;
-  const { key, name, description, color, leadId } = parsed.data;
+  const { key, name, description, color, leadId, githubRepo } = parsed.data;
 
   if (leadId && !(await isWorkspaceMember(workspaceId, leadId))) {
     return apiError(400, "Lead is not a member of this workspace");
@@ -121,7 +121,7 @@ export async function POST(req: Request, { params }: Params) {
   }
 
   const project = await prisma.project.create({
-    data: { workspaceId, key, name, description, color: color ?? null, leadId: leadId ?? null },
+    data: { workspaceId, key, name, description, color: color ?? null, leadId: leadId ?? null, githubRepo: githubRepo ?? null },
   });
 
   return NextResponse.json({ project }, { status: 201 });

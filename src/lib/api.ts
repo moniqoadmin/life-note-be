@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { RateLimitError } from "@/lib/rate-limit";
+import { SopEngineError } from "@/lib/sop-engine";
 
 // Standard error body for every API route:
 //   { "error": { "code": "NOT_FOUND", "message": "Issue not found", "details"?: [...] } }
@@ -94,4 +95,18 @@ export function withApiErrorHandling(handler: (req: Request) => Promise<NextResp
       return apiError(500, "Something went wrong. Please try again.");
     }
   };
+}
+
+/**
+ * Runs an SOP engine operation and maps SopEngineError to the matching API error.
+ * Anything else is rethrown (→ 500).
+ */
+export async function runEngine(op: () => Promise<unknown>): Promise<NextResponse | null> {
+  try {
+    await op();
+    return null;
+  } catch (err) {
+    if (err instanceof SopEngineError) return apiError(err.status, err.message);
+    throw err;
+  }
 }

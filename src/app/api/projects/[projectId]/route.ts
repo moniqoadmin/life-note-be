@@ -126,7 +126,7 @@ export async function PATCH(req: Request, { params }: Params) {
 
   const parsed = await parseJsonBody(req, updateProjectSchema);
   if (!parsed.success) return parsed.response;
-  const { name, description, color, leadId } = parsed.data;
+  const { name, description, color, leadId, githubRepo } = parsed.data;
 
   if (leadId && !(await isWorkspaceMember(existing.workspaceId, leadId))) {
     return apiError(400, "Lead is not a member of this workspace");
@@ -139,6 +139,7 @@ export async function PATCH(req: Request, { params }: Params) {
       ...(description !== undefined && { description }),
       ...(color !== undefined && { color }),
       ...(leadId !== undefined && { leadId }),
+      ...(githubRepo !== undefined && { githubRepo }),
     },
   });
 

@@ -25,7 +25,7 @@ export const getApiDocs = () => {
           description:
             "Acceptance criteria, relations, comments, work logs, attachments, watchers, dev links and activity",
         },
-        { name: "Runbooks", description: "SOPs attached to issues as step-by-step runbooks" },
+        { name: "Runbooks", description: "SOP executions: SOPs running against issues/tasks/notes, step actions, approvals, GitHub" },
         { name: "Notifications", description: "In-app notifications for @mentions and assignments" },
       ],
       components: {
@@ -183,16 +183,88 @@ export const getApiDocs = () => {
               image: { type: "string", nullable: true },
             },
           },
+          SopStepType: {
+            type: "string",
+            enum: ["INSTRUCTION", "CHECKLIST", "USER_ACTION", "APPROVAL", "TESTING", "GITHUB_ACTION", "CONDITION", "CONFIRMATION", "AUTOMATED_ACTION"],
+          },
+          SopCondition: {
+            type: "object",
+            description:
+              "JSON condition tree. Leaf: { field, operator, value }, where field is a dotted path into the context — " +
+              "issue.{type,status,priority,labels,storyPoints,componentId,component.name,project.key,fields.<custom>,...}, " +
+              "task.{title,status}, note.{title,depth,path,module.title}, steps.<stepKey>.{status,result,attempt,approvals,rejections}, event.{type,step.key,step.result}, " +
+              "execution.{status,assignmentType}. Combine with { all: [...] } (AND), { any: [...] } (OR), { not: {...} }. " +
+              "Operators: EQUALS, NOT_EQUALS, CONTAINS, NOT_CONTAINS, IN, NOT_IN, GREATER_THAN, GREATER_THAN_OR_EQUAL, " +
+              "LESS_THAN, LESS_THAN_OR_EQUAL, STARTS_WITH, ENDS_WITH, EXISTS, NOT_EXISTS.",
+            example: {
+              all: [
+                { field: "issue.type", operator: "EQUALS", value: "BUG" },
+                { field: "issue.fields.riskLevel", operator: "IN", value: ["HIGH", "CRITICAL"] },
+              ],
+            },
+          },
+          SopAction: {
+            type: "object",
+            required: ["type"],
+            description:
+              "One action from the registry: SET_ISSUE_STATUS {status}, SET_TASK_STATUS {status}, SET_RUNBOOK_STATUS {status: FAILED|BLOCKED|SKIPPED}, " +
+              "GO_TO_STEP {stepKey}, SKIP_STEP {stepKey}, REQUIRE_APPROVALS {stepKey, count}, SET_STEP_CONFIG {stepKey, config}, " +
+              "ADD_LABEL {label}, REMOVE_LABEL {label}, ASSIGN_ISSUE {userId|null}, SET_ISSUE_FIELD {field, value}.",
+            properties: { type: { type: "string" } },
+            example: { type: "REQUIRE_APPROVALS", stepKey: "tech-lead-approval", count: 2 },
+          },
+          SopRuleInput: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              trigger: {
+                type: "string",
+                enum: ["EXECUTION_STARTED", "EXECUTION_COMPLETED", "STEP_STARTED", "STEP_COMPLETED", "STEP_FAILED", "STEP_BLOCKED", "STEP_SKIPPED", "ISSUE_UPDATED", "ISSUE_STATUS_CHANGED", "TASK_UPDATED", "NOTE_UPDATED"],
+              },
+              condition: { $ref: "#/components/schemas/SopCondition" },
+              actions: { type: "array", items: { $ref: "#/components/schemas/SopAction" } },
+              enabled: { type: "boolean", default: true },
+            },
+          },
+          SopRule: {
+            allOf: [
+              { $ref: "#/components/schemas/SopRuleInput" },
+              {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  sopId: { type: "string" },
+                  createdAt: { type: "string", format: "date-time" },
+                  updatedAt: { type: "string", format: "date-time" },
+                },
+              },
+            ],
+          },
           SopStep: {
             type: "object",
             properties: {
               id: { type: "string" },
               sopId: { type: "string" },
+              key: { type: "string", description: "Stable handle for conditions/rules, unique in the SOP.", example: "qa-testing" },
               position: { type: "integer" },
               title: { type: "string" },
               description: { type: "string" },
               command: { type: "string", nullable: true },
               requiresSignoff: { type: "boolean" },
+              type: { $ref: "#/components/schemas/SopStepType" },
+              config: {
+                type: "object",
+                description:
+                  "By type — CHECKLIST: { items: [{ id, label, required }] }; APPROVAL: { requiredApprovals, approvers?: { userIds, roles, projectLead } }; " +
+                  "GITHUB_ACTION: { event: PR_OPENED|PR_MERGED|CHECKS_PASSED, baseBranch?, allowManualCompletion? }; " +
+                  "CONDITION: { condition, onTrue?, onFalse? } with { then: CONTINUE|FAIL|BLOCK|GO_TO_STEP, stepKey? }; " +
+                  "AUTOMATED_ACTION: { actions: SopAction[] }. Any manual type: { allowedUserIds?, allowedRoles? }.",
+              },
+              condition: {
+                allOf: [{ $ref: "#/components/schemas/SopCondition" }],
+                nullable: true,
+                description: "When set, the step only runs if this holds when it's reached; otherwise it's SKIPPED.",
+              },
               createdAt: { type: "string", format: "date-time" },
               updatedAt: { type: "string", format: "date-time" },
             },
@@ -420,35 +492,117 @@ export const getApiDocs = () => {
             properties: {
               id: { type: "string" },
               runbookId: { type: "string" },
+              key: { type: "string" },
               position: { type: "integer" },
               title: { type: "string" },
               description: { type: "string" },
               command: { type: "string", nullable: true },
               requiresSignoff: { type: "boolean" },
-              status: { type: "string", enum: ["PENDING", "IN_PROGRESS", "VERIFIED", "SKIPPED"] },
+              type: { $ref: "#/components/schemas/SopStepType" },
+              config: { type: "object" },
+              condition: { allOf: [{ $ref: "#/components/schemas/SopCondition" }], nullable: true },
+              status: {
+                type: "string",
+                enum: ["PENDING", "IN_PROGRESS", "VERIFIED", "FAILED", "BLOCKED", "SKIPPED"],
+                description: "VERIFIED = completed.",
+              },
+              result: { type: "string", nullable: true, description: "PASSED/FAILED, APPROVED/REJECTED, TRUE/FALSE, ..." },
+              data: { type: "object", description: "Type-specific state, e.g. CHECKLIST { checkedItems }." },
+              attempt: { type: "integer", description: "Increments on each retry/rewind." },
               notes: { type: "string" },
               output: { type: "string" },
               executor: { type: "string", nullable: true, example: "automated pipeline #4418" },
               completedById: { type: "string", nullable: true },
               completedBy: { allOf: [{ $ref: "#/components/schemas/User" }], nullable: true },
+              approvals: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    userId: { type: "string" },
+                    user: { $ref: "#/components/schemas/User" },
+                    decision: { type: "string", enum: ["APPROVED", "REJECTED"] },
+                    comment: { type: "string" },
+                    attempt: { type: "integer" },
+                    current: { type: "boolean", description: "Counts toward the step's current attempt." },
+                    createdAt: { type: "string", format: "date-time" },
+                  },
+                },
+              },
+              startedAt: { type: "string", format: "date-time", nullable: true },
               completedAt: { type: "string", format: "date-time", nullable: true },
               createdAt: { type: "string", format: "date-time" },
               updatedAt: { type: "string", format: "date-time" },
             },
           },
-          Runbook: {
+          RunbookEvent: {
             type: "object",
             properties: {
               id: { type: "string" },
-              issueId: { type: "string" },
+              type: {
+                type: "string",
+                example: "STEP_COMPLETED",
+                description:
+                  "EXECUTION_CREATED, EXECUTION_COMPLETED, EXECUTION_CANCELLED, EXECUTION_JUMPED, ASSIGNMENT_RESOLVED, ASSIGNMENT_CHANGED, " +
+                  "STEP_STARTED, STEP_COMPLETED, STEP_FAILED, STEP_BLOCKED, STEP_SKIPPED, STEP_RETRIED, APPROVAL_RECEIVED, " +
+                  "RULE_EXECUTED, ACTION_FAILED, EXTERNAL_EVENT, LOOP_LIMIT",
+              },
+              actorId: { type: "string", nullable: true, description: "null = the engine." },
+              actor: { allOf: [{ $ref: "#/components/schemas/User" }], nullable: true },
+              data: { type: "object" },
+              createdAt: { type: "string", format: "date-time" },
+            },
+          },
+          Runbook: {
+            type: "object",
+            description: "An SOP execution: one run of an SOP definition against an issue or a task.",
+            properties: {
+              id: { type: "string" },
+              issueId: { type: "string", nullable: true },
+              taskId: { type: "string", nullable: true },
+              noteId: { type: "string", nullable: true },
               sopId: { type: "string", nullable: true },
               sopVersion: { type: "integer", description: "SOP version the steps were copied from." },
               title: { type: "string" },
               mode: { type: "string", enum: ["MANUAL", "AUTOMATED"] },
+              status: { type: "string", enum: ["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED", "SKIPPED", "BLOCKED"] },
+              assignmentType: { type: "string", enum: ["ENTITY_INHERITED", "TASK_OVERRIDE", "MANUAL"], nullable: true },
+              currentStepId: { type: "string", nullable: true },
+              startedAt: { type: "string", format: "date-time", nullable: true },
+              completedAt: { type: "string", format: "date-time", nullable: true },
               createdAt: { type: "string", format: "date-time" },
               updatedAt: { type: "string", format: "date-time" },
               steps: { type: "array", items: { $ref: "#/components/schemas/RunbookStep" } },
-              progress: { type: "object", properties: { completed: { type: "integer" }, total: { type: "integer" }, percent: { type: "integer" }, currentStepId: { type: "string", nullable: true } } },
+              events: { type: "array", items: { $ref: "#/components/schemas/RunbookEvent" } },
+              progress: {
+                type: "object",
+                properties: {
+                  completed: { type: "integer", description: "VERIFIED + SKIPPED." },
+                  total: { type: "integer" },
+                  percent: { type: "integer" },
+                  currentStepId: { type: "string", nullable: true },
+                  completedStepIds: { type: "array", items: { type: "string" } },
+                  skippedStepIds: { type: "array", items: { type: "string" } },
+                  pendingStepIds: { type: "array", items: { type: "string" } },
+                  inProgressStepIds: { type: "array", items: { type: "string" } },
+                  failedStepIds: { type: "array", items: { type: "string" } },
+                  blockedStepIds: { type: "array", items: { type: "string" } },
+                },
+              },
+            },
+          },
+          ExecutionSummary: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              status: { type: "string" },
+              assignmentType: { type: "string", nullable: true },
+              sopVersion: { type: "integer" },
+              issue: { type: "object", nullable: true },
+              task: { type: "object", nullable: true },
+              currentStep: { type: "object", nullable: true },
+              progress: { type: "object", properties: { completed: { type: "integer" }, total: { type: "integer" } } },
             },
           },
           IssueDetail: {

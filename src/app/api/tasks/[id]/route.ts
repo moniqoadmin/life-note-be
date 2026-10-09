@@ -4,7 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { updateTaskSchema } from "@/lib/validation";
 import { getOwnedTask } from "@/lib/tasks";
 import { apiError, validationError } from "@/lib/api";
-import { createTaskRunbook } from "@/lib/sop-engine";
+import { ENGINE_TX_OPTIONS, handleTargetUpdated, syncTaskAssignment } from "@/lib/sop-engine";
+import { listRunbooks } from "@/lib/issues";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -123,21 +124,8 @@ export async function GET(_req: Request, { params }: Params) {
     return apiError(404, "Task not found");
   }
 
-  const taskWithRunbooks = await prisma.task.findUniqueOrThrow({
-    where: { id },
-    include: {
-      runbooks: {
-        include: {
-          steps: {
-            orderBy: { position: "asc" },
-            include: { approvals: { orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, name: true, image: true } } } } },
-          },
-          events: { orderBy: { createdAt: "asc" } },
-        },
-      },
-    },
-  });
-  return NextResponse.json({ task: taskWithRunbooks });
+  const runbooks = await listRunbooks({ taskId: id });
+  return NextResponse.json({ task: { ...task, runbooks } });
 }
 
 export async function PATCH(req: Request, { params }: Params) {
@@ -169,38 +157,25 @@ export async function PATCH(req: Request, { params }: Params) {
     const updated = await tx.task.update({
       where: { id },
       data: {
-      ...(title !== undefined && { title }),
-      ...(content !== undefined && { content }),
-      ...(status !== undefined && { status }),
-      ...(dueDate !== undefined && { dueDate }),
+        ...(title !== undefined && { title }),
+        ...(content !== undefined && { content }),
+        ...(status !== undefined && { status }),
+        ...(dueDate !== undefined && { dueDate }),
         ...(sopOverrideId !== undefined && { sopOverrideId }),
       },
     });
-    if (sopOverrideId !== undefined) {
-      const active = await tx.issueRunbook.findMany({ where: { taskId: id, assignmentType: "TASK_OVERRIDE", status: { in: ["PENDING", "IN_PROGRESS", "BLOCKED"] } }, select: { id: true } });
-      if (active.length) {
-        const runIds = active.map((run) => run.id);
-        await tx.issueRunbook.updateMany({ where: { id: { in: runIds } }, data: { status: "SKIPPED", currentStepId: null } });
-        await tx.runbookStep.updateMany({ where: { runbookId: { in: runIds }, status: { in: ["PENDING", "IN_PROGRESS"] } }, data: { status: "SKIPPED", completedAt: new Date() } });
-      }
-      if (sopOverrideId) await createTaskRunbook(tx, updated, sopOverrideId);
+    if (sopOverrideId !== undefined && sopOverrideId !== existing.sopOverrideId) {
+      await syncTaskAssignment(tx, id, userId);
     }
-    return tx.task.findUniqueOrThrow({
-      where: { id },
-      include: {
-        runbooks: {
-          include: {
-            steps: {
-              orderBy: { position: "asc" },
-              include: { approvals: { orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, name: true, image: true } } } } },
-            },
-          },
-        },
-      },
-    });
-  });
+    const fields = Object.keys(parsed.data).filter((f) => f !== "sopOverrideId");
+    if (fields.length) {
+      await handleTargetUpdated(tx, { taskId: id }, { statusChanged: status !== undefined && status !== existing.status, fields }, userId);
+    }
+    return updated;
+  }, ENGINE_TX_OPTIONS);
 
-  return NextResponse.json({ task });
+  const runbooks = await listRunbooks({ taskId: id });
+  return NextResponse.json({ task: { ...task, runbooks } });
 }
 
 export async function DELETE(_req: Request, { params }: Params) {

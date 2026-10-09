@@ -1,58 +1,74 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { apiError, parseJsonBody } from "@/lib/api";
+import { apiError, parseJsonBody, runEngine } from "@/lib/api";
 import { createRunbookApprovalSchema } from "@/lib/validation";
 import { getAccessibleIssue, getRunbook, withRunbookProgress } from "@/lib/issues";
-import { advanceRunbook, applySopRules, recordRunbookEvent } from "@/lib/sop-engine";
+import { ENGINE_TX_OPTIONS, submitApproval } from "@/lib/sop-engine";
 
 type Params = { params: Promise<{ issueId: string; runbookId: string; stepId: string }> };
 
+/**
+ * @swagger
+ * /issues/{issueId}/runbooks/{runbookId}/steps/{stepId}/approvals:
+ *   post:
+ *     tags: [Runbooks]
+ *     summary: Approve or reject an approval step
+ *     description: >-
+ *       One decision per user per step attempt. REJECTED fails the step (firing STEP_FAILED rules).
+ *       The step completes once APPROVED decisions on the current attempt reach config.requiredApprovals
+ *       (default 1; rules can raise it, e.g. REQUIRE_APPROVALS for high-risk issues). If
+ *       config.approvers is set, only matching users (userIds / workspace roles / projectLead) may decide.
+ *     security: [{ CookieAuth: [] }]
+ *     parameters:
+ *       - $ref: '#/components/parameters/IssueId'
+ *       - { in: path, name: runbookId, required: true, schema: { type: string } }
+ *       - { in: path, name: stepId, required: true, schema: { type: string } }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [decision]
+ *             properties:
+ *               decision: { type: string, enum: [APPROVED, REJECTED] }
+ *               comment: { type: string }
+ *     responses:
+ *       200:
+ *         description: The whole execution, with updated progress.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 runbook: { $ref: '#/components/schemas/Runbook' }
+ *       400: { $ref: '#/components/responses/BadRequest' }
+ *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { $ref: '#/components/responses/Forbidden' }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ *       409:
+ *         description: The step isn't in a state that allows this change (e.g. not the active step).
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/Error' }
+ */
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) return apiError(401, "Unauthorized");
   const userId = session.user.id;
   const { issueId, runbookId, stepId } = await params;
-  const issue = await getAccessibleIssue(userId, issueId);
-  if (!issue) return apiError(404, "Issue not found");
-  const runbook = await getRunbook(issueId, runbookId);
-  if (!runbook) return apiError(404, "Runbook not found");
-  const step = runbook.steps.find((candidate) => candidate.id === stepId);
-  if (!step) return apiError(404, "Step not found");
-  if (step.type !== "APPROVAL") return apiError(400, "This step does not require an approval");
-  if (step.status !== "IN_PROGRESS") return apiError(409, "Approval step is not active");
+  if (!(await getAccessibleIssue(userId, issueId))) return apiError(404, "Issue not found");
+  if (!(await prisma.issueRunbook.findFirst({ where: { id: runbookId, issueId }, select: { id: true } }))) {
+    return apiError(404, "Runbook not found");
+  }
   const parsed = await parseJsonBody(req, createRunbookApprovalSchema);
   if (!parsed.success) return parsed.response;
 
-  const accepted = await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT "id" FROM "runbook_steps" WHERE "id" = ${stepId} FOR UPDATE`;
-    const previous = await tx.runbookApproval.findUnique({ where: { stepId_userId: { stepId, userId } } });
-    if (previous) return false;
-    await tx.runbookApproval.create({ data: { stepId, userId, ...parsed.data } });
-    await recordRunbookEvent(tx, runbookId, userId, "APPROVAL_RECEIVED", {
-      stepId, decision: parsed.data.decision, comment: parsed.data.comment,
-    });
-    if (parsed.data.decision === "REJECTED") {
-      await tx.runbookStep.update({ where: { id: stepId }, data: { status: "FAILED", completedById: userId, completedAt: new Date(), notes: parsed.data.comment } });
-      await tx.issueRunbook.update({ where: { id: runbookId }, data: { status: "FAILED", currentStepId: stepId } });
-      await applySopRules(tx, runbookId, issueId, "STEP_FAILED", userId);
-      return true;
-    }
-
-    const config = step.config && typeof step.config === "object" && !Array.isArray(step.config)
-      ? step.config as Record<string, unknown> : {};
-    const required = typeof config.requiredApprovals === "number" && Number.isInteger(config.requiredApprovals)
-      ? Math.max(1, config.requiredApprovals) : 1;
-    const approvals = await tx.runbookApproval.count({ where: { stepId, decision: "APPROVED" } });
-    if (approvals >= required) {
-      await tx.runbookStep.update({ where: { id: stepId }, data: { status: "VERIFIED", completedById: userId, completedAt: new Date() } });
-      await recordRunbookEvent(tx, runbookId, userId, "STEP_COMPLETED", { stepId, via: "APPROVAL", approvals, required });
-      await advanceRunbook(tx, runbookId, issueId, stepId, userId);
-      await applySopRules(tx, runbookId, issueId, "STEP_COMPLETED", userId);
-    }
-    return true;
-  });
-  if (!accepted) return apiError(409, "You have already submitted a decision for this step");
+  const failed = await runEngine(() =>
+    prisma.$transaction((tx) => submitApproval(tx, { runbookId, stepId, userId, ...parsed.data }), ENGINE_TX_OPTIONS)
+  );
+  if (failed) return failed;
 
   const updated = await getRunbook(issueId, runbookId);
   return NextResponse.json({ runbook: updated && withRunbookProgress(updated) });

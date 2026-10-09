@@ -3,7 +3,8 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { createTaskSchema, taskStatusSchema } from "@/lib/validation";
 import { validationError, apiError } from "@/lib/api";
-import { createTaskRunbook } from "@/lib/sop-engine";
+import { ENGINE_TX_OPTIONS, syncTaskAssignment } from "@/lib/sop-engine";
+import { listRunbooks } from "@/lib/issues";
 
 /**
  * @swagger
@@ -120,21 +121,9 @@ export async function POST(req: Request) {
     const created = await tx.task.create({
       data: { userId, title, content, status, dueDate: dueDate ?? null, sopOverrideId: sopOverrideId ?? null },
     });
-    if (sopOverrideId) await createTaskRunbook(tx, created, sopOverrideId);
-    return tx.task.findUniqueOrThrow({
-      where: { id: created.id },
-      include: {
-        runbooks: {
-          include: {
-            steps: {
-              orderBy: { position: "asc" },
-              include: { approvals: { include: { user: { select: { id: true, name: true, image: true } } } } },
-            },
-          },
-        },
-      },
-    });
-  });
+    await syncTaskAssignment(tx, created.id, userId);
+    return created;
+  }, ENGINE_TX_OPTIONS);
 
-  return NextResponse.json({ task }, { status: 201 });
+  return NextResponse.json({ task: { ...task, runbooks: await listRunbooks({ taskId: task.id }) } }, { status: 201 });
 }

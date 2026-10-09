@@ -1,16 +1,17 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody, apiError, runEngine } from "@/lib/api";
+import { apiError, parseJsonBody, runEngine } from "@/lib/api";
 import { updateRunbookStepSchema } from "@/lib/validation";
-import { getAccessibleIssue, getRunbook, withRunbookProgress } from "@/lib/issues";
+import { getOwnedNote } from "@/lib/notes";
+import { getNoteRunbook, withRunbookProgress } from "@/lib/issues";
 import { ENGINE_TX_OPTIONS, updateStep } from "@/lib/sop-engine";
 
-type Params = { params: Promise<{ issueId: string; runbookId: string; stepId: string }> };
+type Params = { params: Promise<{ id: string; runbookId: string; stepId: string }> };
 
 /**
  * @swagger
- * /issues/{issueId}/runbooks/{runbookId}/steps/{stepId}:
+ * /notes/{id}/runbooks/{runbookId}/steps/{stepId}:
  *   patch:
  *     tags: [Runbooks]
  *     summary: Act on an execution step
@@ -26,7 +27,7 @@ type Params = { params: Promise<{ issueId: string; runbookId: string; stepId: st
  *       engine moves to the next applicable step.
  *     security: [{ CookieAuth: [] }]
  *     parameters:
- *       - $ref: '#/components/parameters/IssueId'
+ *       - { in: path, name: id, required: true, schema: { type: string } }
  *       - { in: path, name: runbookId, required: true, schema: { type: string } }
  *       - { in: path, name: stepId, required: true, schema: { type: string } }
  *     requestBody:
@@ -63,19 +64,11 @@ type Params = { params: Promise<{ issueId: string; runbookId: string; stepId: st
  */
 export async function PATCH(req: Request, { params }: Params) {
   const session = await auth();
-  if (!session?.user?.id) {
-    return apiError(401, "Unauthorized");
-  }
+  if (!session?.user?.id) return apiError(401, "Unauthorized");
   const userId = session.user.id;
-  const { issueId, runbookId, stepId } = await params;
-
-  if (!(await getAccessibleIssue(userId, issueId))) {
-    return apiError(404, "Issue not found");
-  }
-  if (!(await prisma.issueRunbook.findFirst({ where: { id: runbookId, issueId }, select: { id: true } }))) {
-    return apiError(404, "Runbook not found");
-  }
-
+  const { id, runbookId, stepId } = await params;
+  if (!(await getOwnedNote(userId, id))) return apiError(404, "Note not found");
+  if (!(await getNoteRunbook(id, runbookId))) return apiError(404, "Execution not found");
   const parsed = await parseJsonBody(req, updateRunbookStepSchema);
   if (!parsed.success) return parsed.response;
 
@@ -84,6 +77,6 @@ export async function PATCH(req: Request, { params }: Params) {
   );
   if (failed) return failed;
 
-  const updated = await getRunbook(issueId, runbookId);
+  const updated = await getNoteRunbook(id, runbookId);
   return NextResponse.json({ runbook: updated && withRunbookProgress(updated) });
 }

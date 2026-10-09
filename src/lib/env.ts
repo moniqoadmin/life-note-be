@@ -22,6 +22,9 @@ const envSchema = z.object({
   // (<APP_URL>/issues/<issueId>). Optional:
   // without it, emails are sent without a link.
   APP_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
+  // Optional. Shared secret of the GitHub webhook (POST /api/integrations/github/webhook)
+  // that drives GITHUB_ACTION SOP steps; the endpoint returns 503 without it.
+  GITHUB_WEBHOOK_SECRET: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(16).optional()),
   GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });

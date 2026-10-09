@@ -1,25 +1,28 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { parseJsonBody, apiError } from "@/lib/api";
+import { apiError, parseJsonBody } from "@/lib/api";
 import { attachRunbookSchema } from "@/lib/validation";
+import { getOwnedNote } from "@/lib/notes";
 import { getAccessibleSop } from "@/lib/sops";
+import { getNoteRunbook, listRunbooks, withRunbookProgress } from "@/lib/issues";
 import { ENGINE_TX_OPTIONS, startExecution } from "@/lib/sop-engine";
-import { getAccessibleIssue, getRunbook, listRunbooks, withRunbookProgress } from "@/lib/issues";
 
-type Params = { params: Promise<{ issueId: string }> };
+type Params = { params: Promise<{ id: string }> };
 
 /**
  * @swagger
- * /issues/{issueId}/runbooks:
+ * /notes/{id}/runbooks:
  *   get:
  *     tags: [Runbooks]
- *     summary: List an issue's runbooks
+ *     summary: List a note's SOP executions
+ *     description: Oldest first, each with steps, approvals, history and progress.
  *     security: [{ CookieAuth: [] }]
- *     parameters: [{ $ref: '#/components/parameters/IssueId' }]
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
  *     responses:
  *       200:
- *         description: Runbooks with their steps and progress.
+ *         description: The executions.
  *         content:
  *           application/json:
  *             schema:
@@ -30,15 +33,11 @@ type Params = { params: Promise<{ issueId: string }> };
  *       404: { $ref: '#/components/responses/NotFound' }
  *   post:
  *     tags: [Runbooks]
- *     summary: Start an SOP execution manually
- *     description: >-
- *       Starts an execution of the SOP against this issue (assignmentType MANUAL), in addition to any
- *       automatically assigned one. The SOP's steps and rules are snapshotted (later SOP edits don't
- *       change it; sopVersion records which version), then the engine runs to the first step that waits
- *       on a person or event. The SOP must be your own or shared into a workspace you belong to, and
- *       have at least one step.
+ *     summary: Start an SOP execution on a note manually
+ *     description: Same as POST /issues/{issueId}/runbooks (assignmentType MANUAL).
  *     security: [{ CookieAuth: [] }]
- *     parameters: [{ $ref: '#/components/parameters/IssueId' }]
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
  *     requestBody:
  *       required: true
  *       content:
@@ -51,7 +50,7 @@ type Params = { params: Promise<{ issueId: string }> };
  *               mode: { type: string, enum: [MANUAL, AUTOMATED], default: MANUAL }
  *     responses:
  *       201:
- *         description: The runbook.
+ *         description: The execution.
  *         content:
  *           application/json:
  *             schema:
@@ -64,48 +63,31 @@ type Params = { params: Promise<{ issueId: string }> };
  */
 export async function GET(_req: Request, { params }: Params) {
   const session = await auth();
-  if (!session?.user?.id) {
-    return apiError(401, "Unauthorized");
-  }
-  const userId = session.user.id;
-  const { issueId } = await params;
-
-  if (!(await getAccessibleIssue(userId, issueId))) {
-    return apiError(404, "Issue not found");
-  }
-
-  const runbooks = await listRunbooks({ issueId });
-  return NextResponse.json({ runbooks });
+  if (!session?.user?.id) return apiError(401, "Unauthorized");
+  const { id } = await params;
+  if (!(await getOwnedNote(session.user.id, id))) return apiError(404, "Note not found");
+  return NextResponse.json({ runbooks: await listRunbooks({ noteId: id }) });
 }
 
 export async function POST(req: Request, { params }: Params) {
   const session = await auth();
-  if (!session?.user?.id) {
-    return apiError(401, "Unauthorized");
-  }
+  if (!session?.user?.id) return apiError(401, "Unauthorized");
   const userId = session.user.id;
-  const { issueId } = await params;
-
-  if (!(await getAccessibleIssue(userId, issueId))) {
-    return apiError(404, "Issue not found");
-  }
+  const { id } = await params;
+  if (!(await getOwnedNote(userId, id))) return apiError(404, "Note not found");
 
   const parsed = await parseJsonBody(req, attachRunbookSchema);
   if (!parsed.success) return parsed.response;
   const { sopId, mode } = parsed.data;
-
-  if (!(await getAccessibleSop(userId, sopId))) {
-    return apiError(404, "SOP not found");
-  }
+  if (!(await getAccessibleSop(userId, sopId))) return apiError(404, "SOP not found");
   if ((await prisma.sopStep.count({ where: { sopId } })) === 0) {
     return apiError(400, "This SOP has no steps to run");
   }
 
   const runbookId = await prisma.$transaction(
-    (tx) => startExecution(tx, { target: { issueId }, sopId, assignmentType: "MANUAL", actorId: userId, mode }),
+    (tx) => startExecution(tx, { target: { noteId: id }, sopId, assignmentType: "MANUAL", actorId: userId, mode }),
     ENGINE_TX_OPTIONS
   );
-
-  const runbook = await getRunbook(issueId, runbookId);
+  const runbook = await getNoteRunbook(id, runbookId);
   return NextResponse.json({ runbook: runbook && withRunbookProgress(runbook) }, { status: 201 });
 }

@@ -167,7 +167,7 @@ export function relationLabel(type: IssueRelationType, direction: "outward" | "i
   return RELATION_LABELS[type][direction];
 }
 
-const runbookInclude = {
+export const runbookInclude = {
   events: { orderBy: { createdAt: "asc" }, include: { actor: { select: userSelect } } },
   steps: {
     orderBy: { position: "asc" },
@@ -187,29 +187,61 @@ export async function getRunbook(issueId: string, runbookId: string) {
   });
 }
 
-export async function listRunbooks(issueId: string) {
+/** An execution by id with its steps, approvals and history — for task-owned executions. */
+export async function getTaskRunbook(taskId: string, runbookId: string) {
+  return prisma.issueRunbook.findFirst({
+    where: { id: runbookId, taskId },
+    include: runbookInclude,
+  });
+}
+
+/** An execution by id — for note-owned executions. */
+export async function getNoteRunbook(noteId: string, runbookId: string) {
+  return prisma.issueRunbook.findFirst({
+    where: { id: runbookId, noteId },
+    include: runbookInclude,
+  });
+}
+
+export async function listRunbooks(where: { issueId: string } | { taskId: string } | { noteId: string }) {
   const runbooks = await prisma.issueRunbook.findMany({
-    where: { issueId },
+    where,
     orderBy: { createdAt: "asc" },
     include: runbookInclude,
   });
   return runbooks.map(withRunbookProgress);
 }
 
-/** Adds `{ completed, total, percent, currentStepId }` so clients don't recompute it. */
+/**
+ * Adds `progress` so clients don't recompute it: counts, percent, the current step,
+ * and step ids grouped by status (completed / pending / failed / skipped / ...).
+ * Approvals are annotated with whether they count toward the step's current attempt.
+ */
 export function withRunbookProgress(runbook: RunbookWithSteps) {
   const total = runbook.steps.length;
-  const completed = runbook.steps.filter(
-    (s) => s.status === "VERIFIED" || s.status === "SKIPPED"
-  ).length;
-  const current = runbook.steps.find((s) => s.status !== "VERIFIED" && s.status !== "SKIPPED");
+  const ids = (...statuses: string[]) => runbook.steps.filter((s) => statuses.includes(s.status)).map((s) => s.id);
+  const completedIds = ids("VERIFIED");
+  const skippedIds = ids("SKIPPED");
+  const current =
+    runbook.steps.find((s) => s.id === runbook.currentStepId) ??
+    runbook.steps.find((s) => s.status !== "VERIFIED" && s.status !== "SKIPPED");
   return {
     ...runbook,
+    steps: runbook.steps.map((step) => ({
+      ...step,
+      approvals: step.approvals.map((a) => ({ ...a, current: a.attempt === step.attempt })),
+    })),
     progress: {
-      completed,
+      completed: completedIds.length + skippedIds.length,
       total,
-      percent: total === 0 ? 100 : Math.round((completed / total) * 100),
-      currentStepId: current?.id ?? null,
+      percent: total === 0 ? 100 : Math.round(((completedIds.length + skippedIds.length) / total) * 100),
+      currentStepId: runbook.status === "COMPLETED" || runbook.status === "SKIPPED" ? null : current?.id ?? null,
+      completedStepIds: completedIds,
+      skippedStepIds: skippedIds,
+      pendingStepIds: ids("PENDING"),
+      inProgressStepIds: ids("IN_PROGRESS"),
+      failedStepIds: ids("FAILED"),
+      blockedStepIds: ids("BLOCKED"),
     },
   };
 }
@@ -276,7 +308,7 @@ export async function getIssueDetail(userId: string, id: string) {
 
   const [logged, runbooks, relations] = await Promise.all([
     prisma.workLog.aggregate({ where: { issueId: id }, _sum: { minutes: true } }),
-    listRunbooks(id),
+    listRunbooks({ issueId: id }),
     listRelations(id),
   ]);
   const loggedMinutes = logged._sum.minutes ?? 0;

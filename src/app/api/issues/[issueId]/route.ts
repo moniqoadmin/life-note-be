@@ -13,7 +13,7 @@ import {
   validateIssueRefs,
 } from "@/lib/issues";
 import { createNotifications, sendPendingEmails } from "@/lib/notifications";
-import { applySopRules, createAssignedRunbook } from "@/lib/sop-engine";
+import { ENGINE_TX_OPTIONS, handleTargetUpdated, syncIssueAssignment } from "@/lib/sop-engine";
 
 type Params = { params: Promise<{ issueId: string }> };
 
@@ -155,36 +155,16 @@ export async function PATCH(req: Request, { params }: Params) {
 
     const updated = await tx.issue.update({ where: { id: issueId }, data });
 
-    if (statusChanged) {
-      const executions = await tx.issueRunbook.findMany({
-        where: { issueId, status: { in: ["PENDING", "IN_PROGRESS", "BLOCKED"] } }, select: { id: true },
-      });
-      for (const execution of executions) {
-        await applySopRules(tx, execution.id, issueId, "ISSUE_STATUS_CHANGED", userId);
-      }
+    // Re-resolve the SOP only when an input to resolution changed; the engine keeps the
+    // running execution if the resolved SOP is unchanged.
+    const overrideChanged = changes.sopOverrideId !== undefined && changes.sopOverrideId !== existing.sopOverrideId;
+    const componentChanged = changes.componentId !== undefined && changes.componentId !== existing.componentId;
+    if (overrideChanged || componentChanged) {
+      await syncIssueAssignment(tx, issueId, userId);
     }
-
-    if (changes.sopOverrideId !== undefined || changes.componentId !== undefined) {
-      // Preserve prior execution records while closing the previous automatically assigned run.
-      const priorRuns = await tx.issueRunbook.findMany({
-        where: { issueId, assignmentType: { not: null }, status: { in: ["PENDING", "IN_PROGRESS", "BLOCKED"] } },
-        select: { id: true },
-      });
-      if (priorRuns.length) {
-        const runIds = priorRuns.map((run) => run.id);
-        await tx.issueRunbook.updateMany({ where: { id: { in: runIds } }, data: { status: "SKIPPED", currentStepId: null } });
-        await tx.runbookStep.updateMany({
-          where: { runbookId: { in: runIds }, status: { in: ["PENDING", "IN_PROGRESS"] } },
-          data: { status: "SKIPPED", completedAt: new Date(), completedById: userId },
-        });
-      }
-      const runbookId = await createAssignedRunbook(tx, updated, updated.sopOverrideId);
-      if (runbookId) {
-        await recordActivity(tx, issueId, userId, "RUNBOOK_ATTACHED", {
-          runbookId,
-          assignmentType: updated.sopOverrideId ? "TASK_OVERRIDE" : "ENTITY_INHERITED",
-        });
-      }
+    const ruleFields = Object.keys(changes).filter((f) => f !== "position" && f !== "sopOverrideId");
+    if (ruleFields.length) {
+      await handleTargetUpdated(tx, { issueId }, { statusChanged, fields: ruleFields }, userId);
     }
 
     // Board reordering is noise in the history; everything else is recorded.
@@ -212,7 +192,7 @@ export async function PATCH(req: Request, { params }: Params) {
       });
     }
     return [];
-  });
+  }, ENGINE_TX_OPTIONS);
 
   await sendPendingEmails(emails);
 

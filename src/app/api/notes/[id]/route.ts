@@ -3,6 +3,8 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { updateNoteSchema } from "@/lib/validation";
 import { getOwnedNote, wouldCreateCycle } from "@/lib/notes";
+import { getAccessibleSop } from "@/lib/sops";
+import { ENGINE_TX_OPTIONS, handleTargetUpdated, syncNoteAssignment } from "@/lib/sop-engine";
 import { apiError, validationError } from "@/lib/api";
 
 type Params = { params: Promise<{ id: string }> };
@@ -69,6 +71,8 @@ type Params = { params: Promise<{ id: string }> };
  *               title: { type: string }
  *               content: { type: string }
  *               parentId: { type: string, nullable: true }
+ *               sopOverrideId: { type: string, nullable: true, description: "This note's own SOP (TASK_OVERRIDE); starts/replaces its execution." }
+ *               defaultSopId: { type: string, nullable: true, description: "SOP that notes created under this one inherit (ENTITY_INHERITED)." }
  *     responses:
  *       200:
  *         description: The updated note.
@@ -163,7 +167,7 @@ export async function PATCH(req: Request, { params }: Params) {
     return validationError(parsed.error);
   }
 
-  const { title, content, parentId } = parsed.data;
+  const { title, content, parentId, sopOverrideId, defaultSopId } = parsed.data;
 
   if (parentId !== undefined && parentId !== null) {
     const parent = await getOwnedNote(userId, parentId);
@@ -175,14 +179,38 @@ export async function PATCH(req: Request, { params }: Params) {
     }
   }
 
-  const note = await prisma.note.update({
-    where: { id },
-    data: {
-      ...(title !== undefined && { title }),
-      ...(content !== undefined && { content }),
-      ...(parentId !== undefined && { parentId }),
-    },
-  });
+  for (const sopId of [sopOverrideId, defaultSopId]) {
+    if (sopId && !(await getAccessibleSop(userId, sopId))) {
+      return apiError(400, "SOP not found");
+    }
+  }
+
+  const note = await prisma.$transaction(async (tx) => {
+    const updated = await tx.note.update({
+      where: { id },
+      data: {
+        ...(title !== undefined && { title }),
+        ...(content !== undefined && { content }),
+        ...(parentId !== undefined && { parentId }),
+        ...(sopOverrideId !== undefined && { sopOverrideId }),
+        ...(defaultSopId !== undefined && { defaultSopId }),
+      },
+    });
+    // Re-resolve when the override or the ancestry changed; the running execution is
+    // kept if the resolved SOP is the same. A new defaultSopId only affects notes
+    // created under this one from now on.
+    const moved = parentId !== undefined && parentId !== existing.parentId;
+    if (moved || (sopOverrideId !== undefined && sopOverrideId !== existing.sopOverrideId)) {
+      await syncNoteAssignment(tx, id, userId);
+    }
+    const fields = [title !== undefined && "title", content !== undefined && "content", moved && "parentId"].filter(
+      (f): f is string => !!f
+    );
+    if (fields.length) {
+      await handleTargetUpdated(tx, { noteId: id }, { statusChanged: false, fields }, userId);
+    }
+    return updated;
+  }, ENGINE_TX_OPTIONS);
 
   return NextResponse.json({ note });
 }
