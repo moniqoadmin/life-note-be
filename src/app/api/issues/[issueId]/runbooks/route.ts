@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
-import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
 import { attachRunbookSchema } from "@/lib/validation";
-import { getAccessibleSop } from "@/lib/sops";
-import { evaluateCondition, recordRunbookEvent } from "@/lib/sop-engine";
+import { attachExecution, engineTransaction } from "@/lib/sop/engine";
+import { engineErrorResponse } from "@/lib/sop/executions";
 import {
   getAccessibleIssue,
   getRunbook,
@@ -39,9 +37,11 @@ type Params = { params: Promise<{ issueId: string }> };
  *     tags: [Runbooks]
  *     summary: Attach an SOP as a runbook
  *     description: >-
- *       Copies the SOP's current steps onto the issue as a checklist (all PENDING). Later edits to the
- *       SOP don't change this runbook; sopVersion records which version was copied. The SOP must be
- *       your own or shared into a workspace you belong to, and have at least one step.
+ *       Starts an SOP execution on the issue (assignmentType MANUAL) from the SOP's latest published
+ *       version, or its draft if it was never published. Later edits to the SOP don't change this
+ *       runbook; sopVersion records which version was copied. The SOP must be shared into the
+ *       issue's workspace or be your own private SOP, and have at least one step. The first
+ *       applicable step starts immediately.
  *     security: [{ CookieAuth: [] }]
  *     parameters: [{ $ref: '#/components/parameters/IssueId' }]
  *     requestBody:
@@ -101,62 +101,16 @@ export async function POST(req: Request, { params }: Params) {
   if (!parsed.success) return parsed.response;
   const { sopId, mode } = parsed.data;
 
-  const sop = await getAccessibleSop(userId, sopId);
-  if (!sop) {
-    return apiError(404, "SOP not found");
-  }
-  const steps = await prisma.sopStep.findMany({
-    where: { sopId },
-    orderBy: { position: "asc" },
-  });
-  const rules = await prisma.sopRule.findMany({ where: { sopId } });
-  if (steps.length === 0) {
-    return apiError(400, "This SOP has no steps to run");
-  }
-
-  const runbookId = await prisma.$transaction(async (tx) => {
-    const runbook = await tx.issueRunbook.create({
-      data: {
-        issueId,
-        sopId,
-        sopVersion: sop.version,
-        title: sop.title,
-        mode,
-        definitionSnapshot: {
-          id: sop.id, title: sop.title, version: sop.version,
-          steps: steps.map((s) => ({ id: s.id, position: s.position, title: s.title, description: s.description, command: s.command, requiresSignoff: s.requiresSignoff, type: s.type, config: s.config, condition: s.condition })),
-          rules,
-        },
-        steps: {
-          create: steps.map((s, index) => ({
-            position: index,
-            title: s.title,
-            description: s.description,
-            command: s.command,
-            requiresSignoff: s.requiresSignoff,
-            type: s.type,
-            config: s.config as Prisma.InputJsonValue,
-            ...(s.condition !== null && { condition: s.condition as Prisma.InputJsonValue }),
-            status: evaluateCondition(s.condition, issue) ? "PENDING" : "SKIPPED",
-          })),
-        },
-      },
+  let runbookId: string;
+  try {
+    runbookId = await engineTransaction(async (tx) => {
+      const id = await attachExecution(tx, { type: "ISSUE", id: issueId }, sopId, userId, mode);
+      await recordActivity(tx, issueId, userId, "RUNBOOK_ATTACHED", { runbookId: id, assignmentType: "MANUAL" });
+      return id;
     });
-    const first = await tx.runbookStep.findFirst({ where: { runbookId: runbook.id, status: "PENDING" }, orderBy: { position: "asc" } });
-    if (first) {
-      await tx.runbookStep.update({ where: { id: first.id }, data: { status: "IN_PROGRESS" } });
-      await tx.issueRunbook.update({ where: { id: runbook.id }, data: { status: "IN_PROGRESS", currentStepId: first.id } });
-    } else {
-      await tx.issueRunbook.update({ where: { id: runbook.id }, data: { status: "COMPLETED" } });
-    }
-    await recordRunbookEvent(tx, runbook.id, userId, "EXECUTION_CREATED", { sopId: sop.id, sopVersion: sop.version, assignmentType: "MANUAL" });
-    await recordActivity(tx, issueId, userId, "RUNBOOK_ATTACHED", {
-      runbookId: runbook.id,
-      title: sop.title,
-      sopVersion: sop.version,
-    });
-    return runbook.id;
-  });
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
 
   const runbook = await getRunbook(issueId, runbookId);
   return NextResponse.json({ runbook: runbook && withRunbookProgress(runbook) }, { status: 201 });

@@ -3,7 +3,9 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { createTaskSchema, taskStatusSchema } from "@/lib/validation";
 import { validationError, apiError } from "@/lib/api";
-import { createTaskRunbook } from "@/lib/sop-engine";
+import { ENGINE_TX, syncAssignedExecution } from "@/lib/sop/engine";
+import { listSubjectExecutions } from "@/lib/sop/executions";
+import { getAccessibleSop } from "@/lib/sops";
 
 /**
  * @swagger
@@ -110,31 +112,22 @@ export async function POST(req: Request) {
     return validationError(parsed.error);
   }
 
-  const { title, content, status, dueDate, sopOverrideId } = parsed.data;
-  if (sopOverrideId) {
-    const sop = await prisma.sop.findFirst({ where: { id: sopOverrideId, userId, workspaceId: null } });
-    if (!sop) return apiError(400, "Task SOP must be a private SOP owned by you");
+  const { title, content, status, dueDate, sopOverrideId, customFields } = parsed.data;
+  if (sopOverrideId && !(await getAccessibleSop(userId, sopOverrideId))) {
+    return apiError(400, "SOP not found");
   }
 
-  const task = await prisma.$transaction(async (tx) => {
-    const created = await tx.task.create({
-      data: { userId, title, content, status, dueDate: dueDate ?? null, sopOverrideId: sopOverrideId ?? null },
-    });
-    if (sopOverrideId) await createTaskRunbook(tx, created, sopOverrideId);
-    return tx.task.findUniqueOrThrow({
-      where: { id: created.id },
-      include: {
-        runbooks: {
-          include: {
-            steps: {
-              orderBy: { position: "asc" },
-              include: { approvals: { include: { user: { select: { id: true, name: true, image: true } } } } },
-            },
-          },
-        },
+  const created = await prisma.$transaction(async (tx) => {
+    const task = await tx.task.create({
+      data: {
+        userId, title, content, status, dueDate: dueDate ?? null,
+        sopOverrideId: sopOverrideId ?? null, customFields: customFields ?? {},
       },
     });
-  });
+    if (sopOverrideId) await syncAssignedExecution(tx, { type: "TASK", id: task.id }, userId);
+    return task;
+  }, ENGINE_TX);
+  const task = { ...created, runbooks: await listSubjectExecutions({ type: "TASK", id: created.id }) };
 
   return NextResponse.json({ task }, { status: 201 });
 }

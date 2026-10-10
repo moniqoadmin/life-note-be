@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FIELD_PATH_PATTERN, SOP_OPERATORS, UNARY_OPERATORS } from "@/lib/sop/conditions";
 
 const passwordSchema = z
   .string()
@@ -33,10 +34,24 @@ export const resetPasswordSchema = z.object({
   password: passwordSchema,
 });
 
+// Free-form custom fields SOP conditions read as `fields.<key>` (e.g. riskLevel: "HIGH").
+const customFieldValueSchema = z.union([
+  z.string().max(500),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+  z.array(z.union([z.string().max(200), z.number().finite()])).max(50),
+]);
+export const customFieldsSchema = z
+  .record(z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/, "Field keys must be letters, digits or _"), customFieldValueSchema)
+  .refine((fields) => Object.keys(fields).length <= 50, "Too many custom fields");
+
 export const createNoteSchema = z.object({
   title: z.string().min(1, "Title is required").max(200, "Title is too long"),
   content: z.string().max(50_000, "Content is too long").default(""),
   parentId: z.string().min(1).nullable().optional(),
+  sopOverrideId: z.string().min(1).nullable().optional(),
+  customFields: customFieldsSchema.optional(),
 });
 
 // Notes use the IssueStatus/IssuePriority DB enums but only the values the notes UI offers.
@@ -60,6 +75,8 @@ export const updateNoteSchema = z
         labels.filter((l, i) => labels.findIndex((x) => x.toLowerCase() === l.toLowerCase()) === i)
       )
       .optional(),
+    sopOverrideId: z.string().min(1).nullable().optional(),
+    customFields: customFieldsSchema.optional(),
   })
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
 
@@ -107,6 +124,7 @@ export const createTaskSchema = z.object({
   status: taskStatusSchema.default("TODO"),
   dueDate: z.coerce.date().nullable().optional(),
   sopOverrideId: z.string().min(1).nullable().optional(),
+  customFields: customFieldsSchema.optional(),
 });
 
 export const updateTaskSchema = z
@@ -116,6 +134,7 @@ export const updateTaskSchema = z
     status: taskStatusSchema.optional(),
     dueDate: z.coerce.date().nullable().optional(),
     sopOverrideId: z.string().min(1).nullable().optional(),
+    customFields: customFieldsSchema.optional(),
   })
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
 
@@ -123,48 +142,189 @@ export const updateTaskSchema = z
 // SOP steps
 // ---------------------------------------------------------------------------
 
+// Condition tree — see src/lib/sop/conditions.ts for semantics.
 export const sopConditionSchema: z.ZodType<unknown> = z.lazy(() => z.union([
-  z.object({ all: z.array(sopConditionSchema).min(1) }).strict(),
-  z.object({ any: z.array(sopConditionSchema).min(1) }).strict(),
+  z.object({ all: z.array(sopConditionSchema).min(1).max(50) }).strict(),
+  z.object({ any: z.array(sopConditionSchema).min(1).max(50) }).strict(),
+  z.object({ not: sopConditionSchema }).strict(),
   z.object({
-    field: z.enum(["issue.type", "issue.status", "issue.priority", "issue.labels", "issue.componentId", "issue.storyPoints", "task.status", "task.title"]),
-    operator: z.enum(["EQUALS", "NOT_EQUALS", "CONTAINS", "IN", "NOT_IN", "GREATER_THAN", "LESS_THAN", "EXISTS"]),
+    field: z.string().regex(FIELD_PATH_PATTERN, "Unknown condition field — use e.g. issue.type, fields.riskLevel, steps.<key>.status"),
+    operator: z.enum(SOP_OPERATORS),
     value: z.unknown().optional(),
-  }).strict().refine((rule) => rule.operator === "EXISTS" || rule.value !== undefined, "value is required for this operator"),
+  }).strict().refine(
+    (rule) => UNARY_OPERATORS.includes(rule.operator) || rule.value !== undefined,
+    "value is required for this operator"
+  ).refine(
+    (rule) => !["IN", "NOT_IN"].includes(rule.operator) || Array.isArray(rule.value),
+    "IN / NOT_IN need an array value"
+  ),
 ]));
 
-export const createSopRuleSchema = z.object({
-  name: z.string().trim().min(1).max(200),
-  trigger: z.enum(["STEP_COMPLETED", "STEP_FAILED", "STEP_SKIPPED", "ISSUE_STATUS_CHANGED"]),
-  condition: sopConditionSchema,
-  action: z.discriminatedUnion("type", [
-    z.object({ type: z.literal("SET_ISSUE_STATUS"), status: z.enum(["BACKLOG", "TODO", "IN_PROGRESS", "IN_REVIEW", "DONE", "CANCELLED"]) }).strict(),
-    z.object({ type: z.literal("SET_RUNBOOK_STATUS"), status: z.enum(["FAILED", "BLOCKED", "SKIPPED"]) }).strict(),
-  ]),
-  enabled: z.boolean().default(true),
+export const sopStepTypeSchema = z.enum([
+  "INSTRUCTION", "CHECKLIST", "USER_ACTION", "APPROVAL", "TESTING",
+  "GITHUB_ACTION", "CONDITION", "CONFIRMATION", "AUTOMATED_ACTION",
+]);
+export type SopStepTypeInput = z.infer<typeof sopStepTypeSchema>;
+
+export const stepKeySchema = z.string().regex(/^[a-z0-9][a-z0-9_]{0,63}$/, "Keys are lower-case letters, digits and _");
+const anyIssueStatus = z.enum(["BACKLOG", "TODO", "IN_PROGRESS", "IN_REVIEW", "DONE", "CANCELLED"]);
+
+export const SOP_NOTIFY_RECIPIENTS = ["ASSIGNEE", "REPORTER", "WATCHERS", "OWNER"] as const;
+
+// Rule / automated-step action registry. Adding an action = a schema here plus a
+// handler in src/lib/sop/actions.ts; no SOP-specific code anywhere else.
+export const sopActionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("SET_SUBJECT_STATUS"), status: anyIssueStatus }).strict(),
+  // Pre-v2 name of SET_SUBJECT_STATUS, still accepted.
+  z.object({ type: z.literal("SET_ISSUE_STATUS"), status: anyIssueStatus }).strict(),
+  z.object({ type: z.literal("SET_RUNBOOK_STATUS"), status: z.enum(["FAILED", "BLOCKED", "SKIPPED"]) }).strict(),
+  z.object({ type: z.literal("GOTO_STEP"), stepKey: stepKeySchema }).strict(),
+  z.object({ type: z.literal("SKIP_STEP"), stepKey: stepKeySchema }).strict(),
+  z.object({ type: z.literal("ADD_LABEL"), label: z.string().trim().min(1).max(40) }).strict(),
+  z.object({ type: z.literal("REMOVE_LABEL"), label: z.string().trim().min(1).max(40) }).strict(),
+  z.object({
+    type: z.literal("SET_FIELD"),
+    field: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/),
+    value: customFieldValueSchema,
+  }).strict(),
+  z.object({
+    type: z.literal("NOTIFY"),
+    recipients: z.array(z.enum(SOP_NOTIFY_RECIPIENTS)).max(4).default([]),
+    userIds: z.array(z.string().min(1)).max(20).default([]),
+    message: z.string().trim().min(1).max(500),
+  }).strict(),
+]);
+export type SopAction = z.infer<typeof sopActionSchema>;
+
+export const SOP_RULE_TRIGGERS = [
+  "EXECUTION_STARTED",
+  "STEP_STARTED",
+  "STEP_COMPLETED",
+  "STEP_FAILED",
+  "STEP_SKIPPED",
+  "STEP_BLOCKED",
+  "EXECUTION_COMPLETED",
+  "SUBJECT_STATUS_CHANGED",
+  "SUBJECT_UPDATED",
+  // Pre-v2 name of SUBJECT_STATUS_CHANGED, still accepted.
+  "ISSUE_STATUS_CHANGED",
+] as const;
+export type SopRuleTrigger = (typeof SOP_RULE_TRIGGERS)[number];
+
+// Accepts `action` (one) or `actions` (several); normalized to `actions`.
+export const createSopRuleSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    trigger: z.enum(SOP_RULE_TRIGGERS),
+    condition: sopConditionSchema.nullable().default(null),
+    action: sopActionSchema.optional(),
+    actions: z.array(sopActionSchema).min(1).max(10).optional(),
+    enabled: z.boolean().default(true),
+  })
+  .refine((rule) => !!rule.action !== !!rule.actions, "Provide either action or actions")
+  .transform(({ action, actions, ...rule }) => ({ ...rule, actions: actions ?? [action!] }));
+
+// --- Per-type step configuration -------------------------------------------
+// Every config may carry `overrides: [{ when, set }]` (conditional config, resolved
+// when the step starts) and `mandatory` (can't be skipped). Unknown keys are kept so
+// clients can store their own presentation hints.
+const configOverrideSchema = z.object({ when: sopConditionSchema, set: z.record(z.string(), z.unknown()) }).strict();
+const baseStepConfig = z.looseObject({
+  overrides: z.array(configOverrideSchema).max(20).optional(),
+  mandatory: z.boolean().optional(),
 });
 
+export const GITHUB_STEP_EVENTS = [
+  "pull_request.opened",
+  "pull_request.merged",
+  "pull_request.closed",
+  "workflow_run.success",
+  "push",
+] as const;
+
+export const stepConfigSchemas: Record<SopStepTypeInput, z.ZodType<Record<string, unknown>>> = {
+  INSTRUCTION: baseStepConfig,
+  USER_ACTION: baseStepConfig,
+  CONFIRMATION: baseStepConfig.extend({ confirmationText: z.string().max(500).optional() }),
+  CHECKLIST: baseStepConfig.extend({
+    items: z.array(z.object({
+      key: stepKeySchema,
+      label: z.string().trim().min(1).max(300),
+      required: z.boolean().default(true),
+    }).strict()).min(1, "A checklist needs at least one item").max(50)
+      .refine((items) => new Set(items.map((i) => i.key)).size === items.length, "Checklist item keys must be unique"),
+  }),
+  APPROVAL: baseStepConfig.extend({
+    requiredApprovals: z.number().int().min(1).max(20).default(1),
+    approverIds: z.array(z.string().min(1)).max(50).optional(),
+    approverRoles: z.array(z.enum(["OWNER", "ADMIN", "MEMBER"])).max(3).optional(),
+    preventSelfApproval: z.boolean().optional(),
+  }),
+  TESTING: baseStepConfig.extend({ requireResult: z.boolean().default(true) }),
+  CONDITION: baseStepConfig.extend({
+    check: sopConditionSchema,
+    onFalse: z.enum(["FAIL", "BLOCK", "CONTINUE"]).default("FAIL"),
+    onTrueGoto: stepKeySchema.optional(),
+    onFalseGoto: stepKeySchema.optional(),
+  }),
+  GITHUB_ACTION: baseStepConfig.extend({
+    event: z.enum(GITHUB_STEP_EVENTS).optional(),
+    repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "Use owner/repo").optional(),
+    branch: z.string().max(200).optional(),
+    workflow: z.string().max(200).optional(),
+  }),
+  AUTOMATED_ACTION: baseStepConfig.extend({ action: sopActionSchema.optional() }),
+};
+
+/** Validates `config` for a step `type`; returns the parsed config or zod issues. */
+export function parseStepConfig(type: SopStepTypeInput, config: unknown) {
+  return stepConfigSchemas[type].safeParse(config ?? {});
+}
+
 export const createSopStepSchema = z.object({
+  key: stepKeySchema.optional(),
   title: z.string().min(1, "Title is required").max(200, "Title is too long"),
   description: z.string().max(10_000, "Description is too long").default(""),
   command: z.string().max(2_000, "Command is too long").nullable().optional(),
   requiresSignoff: z.boolean().default(false),
-  type: z.enum(["INSTRUCTION", "CHECKLIST", "USER_ACTION", "APPROVAL", "TESTING", "GITHUB_ACTION", "CONDITION", "CONFIRMATION", "AUTOMATED_ACTION"]).default("INSTRUCTION"),
+  type: sopStepTypeSchema.default("INSTRUCTION"),
   config: z.record(z.string(), z.unknown()).default({}),
-  condition: sopConditionSchema.optional(),
+  condition: sopConditionSchema.nullable().optional(),
   position: z.number().int().min(0).optional(),
 });
 
 export const updateSopStepSchema = z
   .object({
+    key: stepKeySchema.optional(),
     title: z.string().min(1, "Title is required").max(200, "Title is too long").optional(),
     description: z.string().max(10_000, "Description is too long").optional(),
     command: z.string().max(2_000, "Command is too long").nullable().optional(),
     requiresSignoff: z.boolean().optional(),
-    type: z.enum(["INSTRUCTION", "CHECKLIST", "USER_ACTION", "APPROVAL", "TESTING", "GITHUB_ACTION", "CONDITION", "CONFIRMATION", "AUTOMATED_ACTION"]).optional(),
+    type: sopStepTypeSchema.optional(),
     config: z.record(z.string(), z.unknown()).optional(),
     condition: sopConditionSchema.nullable().optional(),
     position: z.number().int().min(0).optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, "No fields to update");
+
+// --- SOP assignments (entity-level defaults) ---------------------------------
+export const sopAssignmentScopeSchema = z.object({
+  type: z.enum(["NOTE", "COMPONENT", "PROJECT"]),
+  id: z.string().min(1),
+});
+
+export const createSopAssignmentSchema = z.object({
+  sopId: z.string().min(1),
+  scope: sopAssignmentScopeSchema,
+  condition: sopConditionSchema.nullable().default(null),
+  priority: z.number().int().min(-1000).max(1000).default(0),
+});
+
+export const updateSopAssignmentSchema = z
+  .object({
+    sopId: z.string().min(1).optional(),
+    condition: sopConditionSchema.nullable().optional(),
+    priority: z.number().int().min(-1000).max(1000).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
 
@@ -346,10 +506,11 @@ export const createIssueSchema = z.object({
   sprintId: issueFields.sprintId.optional(),
   releaseId: issueFields.releaseId.optional(),
   sopOverrideId: z.string().min(1).nullable().optional(),
+  customFields: customFieldsSchema.optional(),
 });
 
 export const updateIssueSchema = z
-  .object({ ...issueFields, position: z.number().finite(), sopOverrideId: z.string().min(1).nullable() })
+  .object({ ...issueFields, position: z.number().finite(), sopOverrideId: z.string().min(1).nullable(), customFields: customFieldsSchema })
   .partial()
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
 
@@ -453,20 +614,40 @@ export const attachRunbookSchema = z.object({
   mode: runbookModeSchema.default("MANUAL"),
 });
 
-export const updateRunbookSchema = z.object({ mode: runbookModeSchema });
+export const updateRunbookSchema = z
+  .object({
+    mode: runbookModeSchema.optional(),
+    // CANCEL stops a running execution (kept for history); RESTART rewinds to the first step.
+    action: z.enum(["CANCEL", "RESTART"]).optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, "No fields to update");
 
+// `status` drives the step: VERIFIED completes it, FAILED / BLOCKED / SKIPPED do what
+// they say, IN_PROGRESS on a blocked/failed step retries it and on an earlier finished
+// step rewinds the execution to it (PENDING is accepted as a synonym for rewinding).
 export const updateRunbookStepSchema = z
   .object({
     status: z.enum(["PENDING", "IN_PROGRESS", "VERIFIED", "FAILED", "BLOCKED", "SKIPPED"]).optional(),
     notes: z.string().max(10_000, "Notes are too long").optional(),
     output: z.string().max(50_000, "Output is too long").optional(),
     executor: z.string().max(200).nullable().optional(),
+    // TESTING steps: PASSED completes the step, FAILED fails it.
+    result: z.enum(["PASSED", "FAILED"]).optional(),
+    // CHECKLIST steps: { <itemKey>: done }.
+    checklist: z.record(z.string(), z.boolean()).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
+export type RunbookStepUpdate = z.infer<typeof updateRunbookStepSchema>;
 
 export const createRunbookApprovalSchema = z.object({
   decision: z.enum(["APPROVED", "REJECTED"]),
   comment: z.string().max(10_000).default(""),
+});
+
+export const stepCallbackSchema = z.object({
+  status: z.enum(["SUCCESS", "FAILURE"]),
+  output: z.string().max(50_000).optional(),
+  executor: z.string().max(200).optional(),
 });
 
 export const workspaceSearchSchema = z.object({

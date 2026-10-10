@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
-import { updateSopStepSchema } from "@/lib/validation";
+import { parseStepConfig, updateSopStepSchema } from "@/lib/validation";
 import { getAccessibleSop } from "@/lib/sops";
 import { reorder } from "@/lib/issues";
 
@@ -68,16 +68,36 @@ export async function PATCH(req: Request, { params }: Params) {
   if (!(await getAccessibleSop(userId, id))) {
     return apiError(404, "SOP not found");
   }
-  if (!(await prisma.sopStep.findFirst({ where: { id: stepId, sopId: id } }))) {
+  const existingStep = await prisma.sopStep.findFirst({ where: { id: stepId, sopId: id } });
+  if (!existingStep) {
     return apiError(404, "Step not found");
   }
 
   const parsed = await parseJsonBody(req, updateSopStepSchema);
   if (!parsed.success) return parsed.response;
   const { position, config, condition, ...stepFields } = parsed.data;
+
+  // Re-validate config whenever the type or the config changes.
+  let parsedConfig: Record<string, unknown> | undefined;
+  if (config !== undefined || stepFields.type !== undefined) {
+    const type = stepFields.type ?? existingStep.type;
+    const result = parseStepConfig(type, config ?? existingStep.config);
+    if (!result.success) {
+      return apiError(400, `Invalid ${type} config: ${result.error.issues[0]?.message}`, {
+        code: "VALIDATION_ERROR",
+        details: result.error.issues.map((i) => ({ path: ["config", ...i.path].join("."), message: i.message })),
+      });
+    }
+    parsedConfig = result.data;
+  }
+  if (stepFields.key !== undefined && stepFields.key !== existingStep.key) {
+    const clash = await prisma.sopStep.findFirst({ where: { sopId: id, key: stepFields.key } });
+    if (clash) return apiError(409, `Another step already uses the key "${stepFields.key}"`);
+  }
+
   const fields = {
     ...stepFields,
-    ...(config !== undefined && { config: config as Prisma.InputJsonValue }),
+    ...(parsedConfig !== undefined && { config: parsedConfig as Prisma.InputJsonValue }),
     ...(condition !== undefined && { condition: condition === null ? Prisma.DbNull : condition as Prisma.InputJsonValue }),
   };
 

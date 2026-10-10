@@ -1,4 +1,6 @@
+import type { SopRule } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { normalizeActions, normalizeTrigger } from "@/lib/sop/definition";
 
 /**
  * Fetches an SOP the user can use: their own (private or shared), or one shared into a
@@ -11,4 +13,10 @@ export async function getAccessibleSop(userId: string, id: string) {
       OR: [{ userId }, { workspace: { members: { some: { userId } } } }],
     },
   });
+}
+
+/** API shape of a rule: `actions` is always an array (older rows stored one `action`). */
+export function serializeRule(rule: SopRule) {
+  const { action, ...rest } = rule;
+  return { ...rest, trigger: normalizeTrigger(rule.trigger), actions: normalizeActions(action) };
 }

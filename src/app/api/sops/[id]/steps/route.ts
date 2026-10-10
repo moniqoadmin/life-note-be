@@ -3,7 +3,8 @@ import { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
-import { createSopStepSchema } from "@/lib/validation";
+import { createSopStepSchema, parseStepConfig } from "@/lib/validation";
+import { slugifyKey } from "@/lib/sop/conditions";
 import { getAccessibleSop } from "@/lib/sops";
 import { reorder } from "@/lib/issues";
 
@@ -35,7 +36,10 @@ type Params = { params: Promise<{ id: string }> };
  *   post:
  *     tags: [SOPs]
  *     summary: Add a step
- *     description: Appended to the end unless position (0-based) is given. Bumps the SOP's version.
+ *     description: >-
+ *       Appended to the end unless position (0-based) is given. Bumps the SOP's version. `key`
+ *       (generated from the title when omitted) is what conditions (steps.<key>.status) and rules
+ *       (GOTO_STEP) reference. `config` is validated per `type` — see GET /sop-meta.
  *     security: [{ CookieAuth: [] }]
  *     parameters:
  *       - in: path
@@ -99,7 +103,19 @@ export async function POST(req: Request, { params }: Params) {
 
   const parsed = await parseJsonBody(req, createSopStepSchema);
   if (!parsed.success) return parsed.response;
-  const { position, command, ...fields } = parsed.data;
+  const { position, command, key, config, condition, ...stepFields } = parsed.data;
+  const configParsed = parseStepConfig(stepFields.type, config);
+  if (!configParsed.success) {
+    return apiError(400, `Invalid ${stepFields.type} config: ${configParsed.error.issues[0]?.message}`, {
+      code: "VALIDATION_ERROR",
+      details: configParsed.error.issues.map((i) => ({ path: ["config", ...i.path].join("."), message: i.message })),
+    });
+  }
+
+  const existingKeys = await prisma.sopStep.findMany({ where: { sopId: id }, select: { key: true } });
+  if (key && existingKeys.some((s) => s.key === key)) {
+    return apiError(409, `Another step already uses the key "${key}"`);
+  }
 
   const step = await prisma.$transaction(async (tx) => {
     const siblings = await tx.sopStep.findMany({
@@ -107,12 +123,12 @@ export async function POST(req: Request, { params }: Params) {
       orderBy: { position: "asc" },
       select: { id: true },
     });
-    const { config, condition, ...stepFields } = fields;
     const created = await tx.sopStep.create({
       data: {
         sopId: id, ...stepFields, command: command ?? null, position: siblings.length,
-        config: config as Prisma.InputJsonValue,
-        ...(condition !== undefined && { condition: condition as Prisma.InputJsonValue }),
+        key: key ?? slugifyKey(stepFields.title, existingKeys.map((s) => s.key)),
+        config: configParsed.data as Prisma.InputJsonValue,
+        ...(condition != null && { condition: condition as Prisma.InputJsonValue }),
       },
     });
     if (position !== undefined && position < siblings.length) {

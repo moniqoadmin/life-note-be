@@ -4,7 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { updateTaskSchema } from "@/lib/validation";
 import { getOwnedTask } from "@/lib/tasks";
 import { apiError, validationError } from "@/lib/api";
-import { createTaskRunbook } from "@/lib/sop-engine";
+import { ENGINE_TX, notifySubjectChanged, syncAssignedExecution } from "@/lib/sop/engine";
+import { listSubjectExecutions } from "@/lib/sop/executions";
+import { getAccessibleSop } from "@/lib/sops";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -123,20 +125,7 @@ export async function GET(_req: Request, { params }: Params) {
     return apiError(404, "Task not found");
   }
 
-  const taskWithRunbooks = await prisma.task.findUniqueOrThrow({
-    where: { id },
-    include: {
-      runbooks: {
-        include: {
-          steps: {
-            orderBy: { position: "asc" },
-            include: { approvals: { orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, name: true, image: true } } } } },
-          },
-          events: { orderBy: { createdAt: "asc" } },
-        },
-      },
-    },
-  });
+  const taskWithRunbooks = { ...task, runbooks: await listSubjectExecutions({ type: "TASK", id }) };
   return NextResponse.json({ task: taskWithRunbooks });
 }
 
@@ -159,46 +148,35 @@ export async function PATCH(req: Request, { params }: Params) {
     return validationError(parsed.error);
   }
 
-  const { title, content, status, dueDate, sopOverrideId } = parsed.data;
-  if (sopOverrideId) {
-    const sop = await prisma.sop.findFirst({ where: { id: sopOverrideId, userId, workspaceId: null } });
-    if (!sop) return apiError(400, "Task SOP must be a private SOP owned by you");
+  const { title, content, status, dueDate, sopOverrideId, customFields } = parsed.data;
+  if (sopOverrideId && !(await getAccessibleSop(userId, sopOverrideId))) {
+    return apiError(400, "SOP not found");
   }
 
-  const task = await prisma.$transaction(async (tx) => {
-    const updated = await tx.task.update({
+  const updated = await prisma.$transaction(async (tx) => {
+    const task = await tx.task.update({
       where: { id },
       data: {
-      ...(title !== undefined && { title }),
-      ...(content !== undefined && { content }),
-      ...(status !== undefined && { status }),
-      ...(dueDate !== undefined && { dueDate }),
+        ...(title !== undefined && { title }),
+        ...(content !== undefined && { content }),
+        ...(status !== undefined && { status }),
+        ...(dueDate !== undefined && { dueDate }),
         ...(sopOverrideId !== undefined && { sopOverrideId }),
+        ...(customFields !== undefined && { customFields }),
       },
     });
-    if (sopOverrideId !== undefined) {
-      const active = await tx.issueRunbook.findMany({ where: { taskId: id, assignmentType: "TASK_OVERRIDE", status: { in: ["PENDING", "IN_PROGRESS", "BLOCKED"] } }, select: { id: true } });
-      if (active.length) {
-        const runIds = active.map((run) => run.id);
-        await tx.issueRunbook.updateMany({ where: { id: { in: runIds } }, data: { status: "SKIPPED", currentStepId: null } });
-        await tx.runbookStep.updateMany({ where: { runbookId: { in: runIds }, status: { in: ["PENDING", "IN_PROGRESS"] } }, data: { status: "SKIPPED", completedAt: new Date() } });
-      }
-      if (sopOverrideId) await createTaskRunbook(tx, updated, sopOverrideId);
+    const subject = { type: "TASK", id } as const;
+    if (sopOverrideId !== undefined && sopOverrideId !== existing.sopOverrideId) {
+      await syncAssignedExecution(tx, subject, userId);
     }
-    return tx.task.findUniqueOrThrow({
-      where: { id },
-      include: {
-        runbooks: {
-          include: {
-            steps: {
-              orderBy: { position: "asc" },
-              include: { approvals: { orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, name: true, image: true } } } } },
-            },
-          },
-        },
-      },
-    });
-  });
+    if (status !== undefined && status !== existing.status) {
+      await notifySubjectChanged(tx, subject, "SUBJECT_STATUS_CHANGED", userId);
+    } else if (customFields !== undefined) {
+      await notifySubjectChanged(tx, subject, "SUBJECT_UPDATED", userId);
+    }
+    return task;
+  }, ENGINE_TX);
+  const task = { ...updated, runbooks: await listSubjectExecutions({ type: "TASK", id }) };
 
   return NextResponse.json({ task });
 }

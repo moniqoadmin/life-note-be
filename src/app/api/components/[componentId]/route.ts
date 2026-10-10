@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
@@ -83,13 +84,21 @@ export async function PATCH(req: Request, { params }: Params) {
     }
   }
 
-  const component = await prisma.component.update({
-    where: { id: componentId },
-    data: {
-      ...(name !== undefined && { name }),
-      ...(description !== undefined && { description }),
-      ...(defaultSopId !== undefined && { defaultSopId }),
-    },
+  const component = await prisma.$transaction(async (tx) => {
+    const updated = await tx.component.update({
+      where: { id: componentId },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(description !== undefined && { description }),
+      },
+    });
+    // `defaultSopId` is shorthand for the component's unconditional SOP assignment;
+    // conditional ones are managed through /sop-assignments.
+    if (defaultSopId !== undefined) {
+      await tx.sopAssignment.deleteMany({ where: { componentId, condition: { equals: Prisma.AnyNull } } });
+      if (defaultSopId) await tx.sopAssignment.create({ data: { componentId, sopId: defaultSopId } });
+    }
+    return updated;
   });
 
   return NextResponse.json({ component });

@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { updateNoteSchema } from "@/lib/validation";
 import { getOwnedNote, wouldCreateCycle } from "@/lib/notes";
 import { apiError, validationError } from "@/lib/api";
+import { getAccessibleSop } from "@/lib/sops";
+import { ENGINE_TX, notifySubjectChanged, syncAssignedExecution } from "@/lib/sop/engine";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -174,7 +176,11 @@ export async function PATCH(req: Request, { params }: Params) {
     return validationError(parsed.error);
   }
 
-  const { title, content, parentId, status, priority, labels } = parsed.data;
+  const { title, content, parentId, status, priority, labels, sopOverrideId, customFields } = parsed.data;
+
+  if (sopOverrideId && !(await getAccessibleSop(userId, sopOverrideId))) {
+    return apiError(400, "SOP not found");
+  }
 
   if (parentId !== undefined && parentId !== null) {
     const parent = await getOwnedNote(userId, parentId);
@@ -186,17 +192,34 @@ export async function PATCH(req: Request, { params }: Params) {
     }
   }
 
-  const note = await prisma.note.update({
-    where: { id },
-    data: {
-      ...(title !== undefined && { title }),
-      ...(content !== undefined && { content }),
-      ...(parentId !== undefined && { parentId }),
-      ...(status !== undefined && { status }),
-      ...(priority !== undefined && { priority }),
-      ...(labels !== undefined && { labels }),
-    },
-  });
+  const note = await prisma.$transaction(async (tx) => {
+    const updated = await tx.note.update({
+      where: { id },
+      data: {
+        ...(title !== undefined && { title }),
+        ...(content !== undefined && { content }),
+        ...(parentId !== undefined && { parentId }),
+        ...(status !== undefined && { status }),
+        ...(priority !== undefined && { priority }),
+        ...(labels !== undefined && { labels }),
+        ...(sopOverrideId !== undefined && { sopOverrideId }),
+        ...(customFields !== undefined && { customFields }),
+      },
+    });
+
+    // Moving a note or changing its override can change which SOP it should run; a run
+    // that still matches keeps its progress.
+    const subject = { type: "NOTE", id } as const;
+    const moved = parentId !== undefined && parentId !== existing.parentId;
+    const overrideChanged = sopOverrideId !== undefined && sopOverrideId !== existing.sopOverrideId;
+    if (moved || overrideChanged) await syncAssignedExecution(tx, subject, userId);
+    if (status !== undefined && status !== existing.status) {
+      await notifySubjectChanged(tx, subject, "SUBJECT_STATUS_CHANGED", userId);
+    } else if (labels !== undefined || priority !== undefined || customFields !== undefined) {
+      await notifySubjectChanged(tx, subject, "SUBJECT_UPDATED", userId);
+    }
+    return updated;
+  }, ENGINE_TX);
 
   return NextResponse.json({ note });
 }

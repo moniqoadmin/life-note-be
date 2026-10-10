@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { updateSopSchema } from "@/lib/validation";
-import { getAccessibleSop } from "@/lib/sops";
+import { getAccessibleSop, serializeRule } from "@/lib/sops";
 import { canManageWorkspace, getMembership, userSelect } from "@/lib/workspaces";
 import { apiError, validationError } from "@/lib/api";
 
@@ -127,12 +127,23 @@ export async function GET(_req: Request, { params }: Params) {
     return apiError(404, "SOP not found");
   }
 
-  const sop = await prisma.sop.findUnique({
+  const sop = await prisma.sop.findUniqueOrThrow({
     where: { id },
-    include: { steps: { orderBy: { position: "asc" } }, user: { select: userSelect } },
+    include: {
+      steps: { orderBy: { position: "asc" } },
+      rules: { orderBy: { createdAt: "asc" } },
+      user: { select: userSelect },
+      _count: { select: { assignments: true, runbooks: true } },
+    },
   });
 
-  return NextResponse.json({ sop });
+  return NextResponse.json({
+    sop: {
+      ...sop,
+      rules: sop.rules.map(serializeRule),
+      hasUnpublishedChanges: sop.publishedVersion !== sop.version,
+    },
+  });
 }
 
 export async function PATCH(req: Request, { params }: Params) {

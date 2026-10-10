@@ -14,7 +14,7 @@ import {
   validateIssueRefs,
 } from "@/lib/issues";
 import { createNotifications, sendPendingEmails } from "@/lib/notifications";
-import { createAssignedRunbook } from "@/lib/sop-engine";
+import { ENGINE_TX, syncAssignedExecution } from "@/lib/sop/engine";
 
 type Params = { params: Promise<{ projectId: string }> };
 
@@ -193,13 +193,15 @@ export async function POST(req: Request, { params }: Params) {
         sprintId: data.sprintId ?? null,
         releaseId: data.releaseId ?? null,
         sopOverrideId: data.sopOverrideId ?? null,
+        customFields: data.customFields ?? {},
       },
     });
 
-    const runbookId = await createAssignedRunbook(tx, issue, data.sopOverrideId);
-    if (runbookId) {
+    // Task override, else the component / project default SOP (first matching assignment).
+    const { executionId } = await syncAssignedExecution(tx, { type: "ISSUE", id: issue.id }, userId);
+    if (executionId) {
       await recordActivity(tx, issue.id, userId, "RUNBOOK_ATTACHED", {
-        runbookId, assignmentType: data.sopOverrideId ? "TASK_OVERRIDE" : "ENTITY_INHERITED",
+        runbookId: executionId, assignmentType: data.sopOverrideId ? "TASK_OVERRIDE" : "ENTITY_INHERITED",
       });
     }
 
@@ -220,7 +222,7 @@ export async function POST(req: Request, { params }: Params) {
       : [];
 
     return { issueId: issue.id, emails: pending };
-  });
+  }, ENGINE_TX);
 
   await sendPendingEmails(emails);
 

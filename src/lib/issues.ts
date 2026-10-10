@@ -2,6 +2,12 @@ import type { z } from "zod";
 import { Prisma, type IssueActivityType, type IssueRelationType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { memberOf, userSelect } from "@/lib/workspaces";
+import {
+  executionInclude,
+  listSubjectExecutions,
+  serializeExecution,
+  type ExecutionWithSteps,
+} from "@/lib/sop/executions";
 import type { listIssuesQuerySchema } from "@/lib/validation";
 
 type Db = Prisma.TransactionClient;
@@ -167,51 +173,18 @@ export function relationLabel(type: IssueRelationType, direction: "outward" | "i
   return RELATION_LABELS[type][direction];
 }
 
-const runbookInclude = {
-  events: { orderBy: { createdAt: "asc" }, include: { actor: { select: userSelect } } },
-  steps: {
-    orderBy: { position: "asc" },
-    include: {
-      completedBy: { select: userSelect },
-      approvals: { orderBy: { createdAt: "asc" }, include: { user: { select: userSelect } } },
-    },
-  },
-} satisfies Prisma.IssueRunbookInclude;
-
-type RunbookWithSteps = Prisma.IssueRunbookGetPayload<{ include: typeof runbookInclude }>;
-
+// Runbooks are SOP executions; the engine and their API shape live in src/lib/sop/.
 export async function getRunbook(issueId: string, runbookId: string) {
-  return prisma.issueRunbook.findFirst({
-    where: { id: runbookId, issueId },
-    include: runbookInclude,
-  });
+  return prisma.issueRunbook.findFirst({ where: { id: runbookId, issueId }, include: executionInclude });
 }
 
 export async function listRunbooks(issueId: string) {
-  const runbooks = await prisma.issueRunbook.findMany({
-    where: { issueId },
-    orderBy: { createdAt: "asc" },
-    include: runbookInclude,
-  });
-  return runbooks.map(withRunbookProgress);
+  return listSubjectExecutions({ type: "ISSUE", id: issueId });
 }
 
-/** Adds `{ completed, total, percent, currentStepId }` so clients don't recompute it. */
-export function withRunbookProgress(runbook: RunbookWithSteps) {
-  const total = runbook.steps.length;
-  const completed = runbook.steps.filter(
-    (s) => s.status === "VERIFIED" || s.status === "SKIPPED"
-  ).length;
-  const current = runbook.steps.find((s) => s.status !== "VERIFIED" && s.status !== "SKIPPED");
-  return {
-    ...runbook,
-    progress: {
-      completed,
-      total,
-      percent: total === 0 ? 100 : Math.round((completed / total) * 100),
-      currentStepId: current?.id ?? null,
-    },
-  };
+/** Adds `subject`, `assignment`, `updateAvailable` and `progress` (see serializeExecution). */
+export function withRunbookProgress(runbook: ExecutionWithSteps) {
+  return serializeExecution(runbook);
 }
 
 /** Relations in both directions, labelled from `issueId`'s point of view. */

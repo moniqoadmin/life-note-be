@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
 import { updateRunbookStepSchema } from "@/lib/validation";
 import { getAccessibleIssue, getRunbook, recordActivity, withRunbookProgress } from "@/lib/issues";
-import { advanceRunbook, applySopRules, recordRunbookEvent } from "@/lib/sop-engine";
+import { engineTransaction, updateStep } from "@/lib/sop/engine";
+import { engineErrorResponse } from "@/lib/sop/executions";
 
 type Params = { params: Promise<{ issueId: string; runbookId: string; stepId: string }> };
-
-const isFinished = (status: string) => status === "VERIFIED" || status === "SKIPPED";
 
 /**
  * @swagger
@@ -17,11 +15,11 @@ const isFinished = (status: string) => status === "VERIFIED" || status === "SKIP
  *     tags: [Runbooks]
  *     summary: Update a runbook step
  *     description: >-
- *       Start ("Execute Step" → IN_PROGRESS), complete (VERIFIED), skip (SKIPPED) or reset (PENDING) a
- *       step, and record notes/output. Steps run in order: a step can only start or finish once every
- *       earlier step is VERIFIED or SKIPPED, and can only be reset while every later step is still
- *       PENDING. Steps with requiresSignoff need non-empty notes to be VERIFIED. Finishing a step
- *       records the caller as completedBy; every status change is written to the issue history.
+ *       Same contract as PATCH /sop-executions/{executionId}/steps/{stepId}. Only the active step can
+ *       be completed (VERIFIED), failed, blocked or skipped; IN_PROGRESS (or PENDING) on an earlier
+ *       finished step rewinds the run to it. Steps with requiresSignoff need non-empty notes; TESTING
+ *       steps take `result`, CHECKLIST steps take `checklist`. Finishing a step records the caller as
+ *       completedBy and starts the next applicable step; status changes go to the issue history.
  *     security: [{ CookieAuth: [] }]
  *     parameters:
  *       - $ref: '#/components/parameters/IssueId'
@@ -34,7 +32,9 @@ const isFinished = (status: string) => status === "VERIFIED" || status === "SKIP
  *           schema:
  *             type: object
  *             properties:
- *               status: { type: string, enum: [PENDING, IN_PROGRESS, VERIFIED, SKIPPED] }
+ *               status: { type: string, enum: [PENDING, IN_PROGRESS, VERIFIED, FAILED, BLOCKED, SKIPPED] }
+ *               result: { type: string, enum: [PASSED, FAILED] }
+ *               checklist: { type: object, additionalProperties: { type: boolean } }
  *               notes: { type: string, description: Sign-off notes / links. }
  *               output: { type: string, description: "Command output, e.g. \"3,412 tokens purged\"." }
  *               executor: { type: string, nullable: true, description: "Non-human executor, e.g. \"automated pipeline #4418\"." }
@@ -51,7 +51,7 @@ const isFinished = (status: string) => status === "VERIFIED" || status === "SKIP
  *       401: { $ref: '#/components/responses/Unauthorized' }
  *       404: { $ref: '#/components/responses/NotFound' }
  *       409:
- *         description: Out of order — an earlier step isn't finished, or a later step has already started.
+ *         description: Not the active step, or the runbook was cancelled.
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/Error' }
@@ -78,71 +78,26 @@ export async function PATCH(req: Request, { params }: Params) {
 
   const parsed = await parseJsonBody(req, updateRunbookStepSchema);
   if (!parsed.success) return parsed.response;
-  const { status, notes, output, executor } = parsed.data;
 
-  const statusChanged = status !== undefined && status !== step.status;
-  if (statusChanged) {
-    if (status === "VERIFIED" && step.type === "APPROVAL") {
-      return apiError(400, "Approval steps must be completed through the approvals endpoint");
-    }
-    const earlier = runbook.steps.filter((s) => s.position < step.position);
-    const later = runbook.steps.filter((s) => s.position > step.position);
-
-    if (status !== "PENDING") {
-      const blocker = earlier.find((s) => !isFinished(s.status));
-      if (blocker) {
-        return apiError(409, `Finish step ${blocker.position + 1} ("${blocker.title}") first`);
+  try {
+    await engineTransaction(async (tx) => {
+      await updateStep(tx, runbookId, stepId, userId, parsed.data);
+      const after = await tx.runbookStep.findUniqueOrThrow({ where: { id: stepId }, select: { status: true } });
+      if (after.status !== step.status) {
+        await recordActivity(tx, issueId, userId, "RUNBOOK_STEP_UPDATED", {
+          runbookId,
+          stepId,
+          step: step.position + 1,
+          title: step.title,
+          from: step.status,
+          to: after.status,
+          ...(parsed.data.executor && { executor: parsed.data.executor }),
+        });
       }
-    }
-    if (!isFinished(status)) {
-      const started = later.find((s) => s.status !== "PENDING");
-      if (started) {
-        return apiError(409, `Step ${started.position + 1} has already started; reset it first`);
-      }
-    }
-    if (status === "VERIFIED" && step.requiresSignoff && !(notes ?? step.notes).trim()) {
-      return apiError(400, "This step requires sign-off notes before it can be verified");
-    }
-  }
-
-  await prisma.$transaction(async (tx) => {
-    await tx.runbookStep.update({
-      where: { id: stepId },
-      data: {
-        ...(notes !== undefined && { notes }),
-        ...(output !== undefined && { output }),
-        ...(executor !== undefined && { executor }),
-        ...(statusChanged && {
-          status,
-          completedById: status === "PENDING" || status === "IN_PROGRESS" ? null : userId,
-          completedAt: status === "PENDING" || status === "IN_PROGRESS" ? null : new Date(),
-        }),
-      },
     });
-    if (statusChanged) {
-      if (status === "FAILED" || status === "BLOCKED") {
-        await tx.issueRunbook.update({ where: { id: runbookId }, data: { status, currentStepId: stepId } });
-        await recordRunbookEvent(tx, runbookId, userId, `STEP_${status}`, { stepId, title: step.title, output });
-        if (status === "FAILED") await applySopRules(tx, runbookId, issueId, "STEP_FAILED", userId);
-      } else if (status === "IN_PROGRESS") {
-        await tx.issueRunbook.update({ where: { id: runbookId }, data: { status: "IN_PROGRESS", currentStepId: stepId } });
-        await recordRunbookEvent(tx, runbookId, userId, "STEP_STARTED", { stepId, title: step.title });
-      } else if (status === "VERIFIED" || status === "SKIPPED") {
-        await recordRunbookEvent(tx, runbookId, userId, status === "VERIFIED" ? "STEP_COMPLETED" : "STEP_SKIPPED", { stepId, title: step.title, notes, output });
-        await advanceRunbook(tx, runbookId, issueId, stepId, userId);
-        await applySopRules(tx, runbookId, issueId, status === "VERIFIED" ? "STEP_COMPLETED" : "STEP_SKIPPED", userId);
-      }
-      await recordActivity(tx, issueId, userId, "RUNBOOK_STEP_UPDATED", {
-        runbookId,
-        stepId,
-        step: step.position + 1,
-        title: step.title,
-        from: step.status,
-        to: status,
-        ...(executor && { executor }),
-      });
-    }
-  });
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
 
   const updated = await getRunbook(issueId, runbookId);
   return NextResponse.json({ runbook: updated && withRunbookProgress(updated) });

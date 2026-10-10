@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
 import { updateRunbookSchema } from "@/lib/validation";
 import { getAccessibleIssue, getRunbook, withRunbookProgress } from "@/lib/issues";
+import { engineTransaction, updateExecution } from "@/lib/sop/engine";
+import { engineErrorResponse } from "@/lib/sop/executions";
 
 type Params = { params: Promise<{ issueId: string; runbookId: string }> };
 
@@ -30,8 +32,10 @@ type Params = { params: Promise<{ issueId: string; runbookId: string }> };
  *       404: { $ref: '#/components/responses/NotFound' }
  *   patch:
  *     tags: [Runbooks]
- *     summary: Switch runbook mode
- *     description: MANUAL or AUTOMATED (the "Manual" toggle).
+ *     summary: Switch runbook mode, cancel or restart
+ *     description: >-
+ *       `mode` MANUAL or AUTOMATED (the "Manual" toggle). `action: CANCEL` stops the run (kept for
+ *       history); `action: RESTART` rewinds to the first step.
  *     security: [{ CookieAuth: [] }]
  *     parameters:
  *       - $ref: '#/components/parameters/IssueId'
@@ -42,9 +46,9 @@ type Params = { params: Promise<{ issueId: string; runbookId: string }> };
  *         application/json:
  *           schema:
  *             type: object
- *             required: [mode]
  *             properties:
  *               mode: { type: string, enum: [MANUAL, AUTOMATED] }
+ *               action: { type: string, enum: [CANCEL, RESTART] }
  *     responses:
  *       200:
  *         description: The updated runbook.
@@ -107,7 +111,11 @@ export async function PATCH(req: Request, { params }: Params) {
   const parsed = await parseJsonBody(req, updateRunbookSchema);
   if (!parsed.success) return parsed.response;
 
-  await prisma.issueRunbook.update({ where: { id: runbookId }, data: { mode: parsed.data.mode } });
+  try {
+    await engineTransaction((tx) => updateExecution(tx, runbookId, userId, parsed.data));
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
 
   const runbook = await getRunbook(issueId, runbookId);
   return NextResponse.json({ runbook: runbook && withRunbookProgress(runbook) });

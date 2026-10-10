@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { createNoteSchema } from "@/lib/validation";
 import { getOwnedNote } from "@/lib/notes";
 import { apiError, validationError } from "@/lib/api";
+import { getAccessibleSop } from "@/lib/sops";
+import { ENGINE_TX, syncAssignedExecution } from "@/lib/sop/engine";
 
 /**
  * @swagger
@@ -44,7 +46,10 @@ import { apiError, validationError } from "@/lib/api";
  *   post:
  *     tags: [Notes]
  *     summary: Create a note
- *     description: Creates a note, optionally nested under an existing note via parentId.
+ *     description: >-
+ *       Creates a note, optionally nested under an existing note via parentId. The note then
+ *       resolves its SOP — `sopOverrideId` if given, else the first matching SOP assignment of
+ *       its nearest ancestor (e.g. the module it was created in) — and starts an execution.
  *     security: [{ CookieAuth: [] }]
  *     requestBody:
  *       required: true
@@ -57,6 +62,8 @@ import { apiError, validationError } from "@/lib/api";
  *               title: { type: string }
  *               content: { type: string }
  *               parentId: { type: string, nullable: true }
+ *               sopOverrideId: { type: string, nullable: true, description: Pin an SOP instead of inheriting one. }
+ *               customFields: { type: object, description: "Values SOP conditions read as fields.<key>." }
  *     responses:
  *       201:
  *         description: The created note.
@@ -130,7 +137,7 @@ export async function POST(req: Request) {
     return validationError(parsed.error);
   }
 
-  const { title, content, parentId } = parsed.data;
+  const { title, content, parentId, sopOverrideId, customFields } = parsed.data;
 
   if (parentId) {
     const parent = await getOwnedNote(userId, parentId);
@@ -139,9 +146,20 @@ export async function POST(req: Request) {
     }
   }
 
-  const note = await prisma.note.create({
-    data: { userId, title, content, parentId: parentId ?? null },
-  });
+  if (sopOverrideId && !(await getAccessibleSop(userId, sopOverrideId))) {
+    return apiError(400, "SOP not found");
+  }
+
+  const note = await prisma.$transaction(async (tx) => {
+    const created = await tx.note.create({
+      data: {
+        userId, title, content, parentId: parentId ?? null,
+        sopOverrideId: sopOverrideId ?? null, customFields: customFields ?? {},
+      },
+    });
+    await syncAssignedExecution(tx, { type: "NOTE", id: created.id }, userId);
+    return created;
+  }, ENGINE_TX);
 
   return NextResponse.json({ note }, { status: 201 });
 }

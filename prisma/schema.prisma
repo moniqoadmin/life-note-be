@@ -39,6 +39,7 @@ model User {
   runbookStepsDone     RunbookStep[]
   runbookApprovals     RunbookApproval[]
   runbookEvents        RunbookEvent[]
+  sopVersionsPublished SopVersion[]
   devLinks             DevLink[]
   notifications        Notification[]    @relation("NotificationRecipient")
   notificationsSent    Notification[]    @relation("NotificationActor")
@@ -145,11 +146,20 @@ model Note {
   priority IssuePriority @default(MEDIUM)
   labels   String[]      @default([])
 
-  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parent   Note?           @relation("NoteHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
-  children Note[]          @relation("NoteHierarchy")
-  criteria NoteCriterion[]
-  comments NoteComment[]
+  // SOP wiring. `sopOverrideId` pins this note's SOP; otherwise it inherits the first
+  // matching SopAssignment of its nearest ancestor (a Module acts as the "entity").
+  // `customFields` is free-form data SOP conditions can read as `fields.<key>`.
+  sopOverrideId String?
+  customFields  Json    @default("{}")
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent         Note?           @relation("NoteHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children       Note[]          @relation("NoteHierarchy")
+  criteria       NoteCriterion[]
+  comments       NoteComment[]
+  sopOverride    Sop?            @relation("NoteSopOverride", fields: [sopOverrideId], references: [id], onDelete: SetNull)
+  runbooks       IssueRunbook[]
+  sopAssignments SopAssignment[]
 
   // Postgres-maintained generated tsvector column (title + content), kept in sync by the
   // DB on every write — see prisma/sql/notes-search-setup.sql for the GENERATED/GIN setup
@@ -206,24 +216,29 @@ model NoteComment {
 // `version` increments on every content/title/step update so callers can tell whether
 // a copy of an SOP they're holding is stale.
 model Sop {
-  id          String   @id @default(cuid())
-  userId      String
-  workspaceId String?
-  title       String
-  content     String   @default("")
-  version     Int      @default(1)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               String   @id @default(cuid())
+  userId           String
+  workspaceId      String?
+  title            String
+  content          String   @default("")
+  version          Int      @default(1)
+  // The `version` last frozen into a SopVersion. New executions run the latest
+  // published definition; an SOP that was never published runs its live (draft) one.
+  publishedVersion Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  user                 User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   // Deleting a workspace makes its shared SOPs private to their authors again.
-  workspace            Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
-  steps                SopStep[]
-  runbooks             IssueRunbook[]
-  defaultForComponents Component[]    @relation("ComponentDefaultSop")
-  overriddenIssues     Issue[]        @relation("IssueSopOverride")
-  overriddenTasks      Task[]         @relation("TaskSopOverride")
-  rules                SopRule[]
+  workspace        Workspace?      @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  steps            SopStep[]
+  runbooks         IssueRunbook[]
+  assignments      SopAssignment[]
+  versions         SopVersion[]
+  overriddenIssues Issue[]         @relation("IssueSopOverride")
+  overriddenTasks  Task[]          @relation("TaskSopOverride")
+  overriddenNotes  Note[]          @relation("NoteSopOverride")
+  rules            SopRule[]
 
   // Covers "most recently touched SOPs" style listing/ordering.
   @@index([userId, updatedAt])
@@ -253,6 +268,7 @@ enum SopStepType {
 enum SopAssignmentType {
   ENTITY_INHERITED
   TASK_OVERRIDE
+  MANUAL
 }
 
 enum RunbookStatus {
@@ -272,6 +288,7 @@ model Task {
   status        TaskStatus @default(TODO)
   dueDate       DateTime?
   sopOverrideId String?
+  customFields  Json       @default("{}")
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
@@ -292,6 +309,8 @@ model Task {
 model SopStep {
   id              String      @id @default(cuid())
   sopId           String
+  // Stable identifier conditions and rules reference (`steps.<key>.status`, GOTO_STEP).
+  key             String
   position        Int
   title           String
   description     String      @default("")
@@ -305,8 +324,54 @@ model SopStep {
 
   sop Sop @relation(fields: [sopId], references: [id], onDelete: Cascade)
 
+  @@unique([sopId, key])
   @@index([sopId, position])
   @@map("sop_steps")
+}
+
+// An immutable, published copy of an SOP's steps and rules. Executions snapshot
+// from here, so editing the draft never changes what new tasks run until it's
+// published again.
+model SopVersion {
+  id            String   @id @default(cuid())
+  sopId         String
+  version       Int
+  definition    Json
+  publishedById String?
+  createdAt     DateTime @default(now())
+
+  sop         Sop   @relation(fields: [sopId], references: [id], onDelete: Cascade)
+  publishedBy User? @relation(fields: [publishedById], references: [id], onDelete: SetNull)
+
+  @@unique([sopId, version])
+  @@map("sop_versions")
+}
+
+// Entity-level SOP defaults. Exactly one of projectId / componentId / noteId is set
+// (DB check constraint). When resolving a task's SOP, the nearest entity's
+// assignments are tried highest `priority` first; the first whose `condition`
+// matches the task wins. A null condition always matches.
+model SopAssignment {
+  id          String   @id @default(cuid())
+  sopId       String
+  projectId   String?
+  componentId String?
+  noteId      String?
+  condition   Json?
+  priority    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sop       Sop        @relation(fields: [sopId], references: [id], onDelete: Cascade)
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  component Component? @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  note      Note?      @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, priority])
+  @@index([componentId, priority])
+  @@index([noteId, priority])
+  @@index([sopId])
+  @@map("sop_assignments")
 }
 
 // ---------------------------------------------------------------------------
@@ -368,10 +433,11 @@ model Project {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  lead       User?       @relation("ProjectLead", fields: [leadId], references: [id], onDelete: SetNull)
-  components Component[]
-  issues     Issue[]
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead           User?           @relation("ProjectLead", fields: [leadId], references: [id], onDelete: SetNull)
+  components     Component[]
+  issues         Issue[]
+  sopAssignments SopAssignment[]
 
   @@unique([workspaceId, key])
   @@map("projects")
@@ -379,17 +445,16 @@ model Project {
 
 // Sub-areas of a project (e.g. @Auth → Sessions, OAuth2, 2FA).
 model Component {
-  id           String   @id @default(cuid())
-  projectId    String
-  name         String
-  description  String   @default("")
-  defaultSopId String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id          String   @id @default(cuid())
+  projectId   String
+  name        String
+  description String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  defaultSop Sop?    @relation("ComponentDefaultSop", fields: [defaultSopId], references: [id], onDelete: SetNull)
-  issues     Issue[]
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  issues         Issue[]
+  sopAssignments SopAssignment[]
 
   @@unique([projectId, name])
   @@map("components")
@@ -523,6 +588,8 @@ model Issue {
   sprintId        String?
   releaseId       String?
   sopOverrideId   String?
+  // Free-form data SOP conditions read as `fields.<key>` (e.g. riskLevel).
+  customFields    Json          @default("{}")
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
@@ -710,13 +777,16 @@ enum RunbookMode {
   AUTOMATED
 }
 
-// An SOP attached to an issue as an executable checklist. Steps are snapshotted
-// from the SOP at attach time (`sopVersion` records which version); `sopId` is
-// kept only as a back-reference and goes null if the SOP is deleted.
+// An SOP Execution: one run of an SOP definition against exactly one subject — an
+// issue, a note or a task (DB check constraint). Steps are snapshotted from the SOP
+// at attach time (`sopVersion` records which version, `definitionSnapshot` keeps the
+// full definition incl. rules); `sopId` is kept only as a back-reference and goes
+// null if the SOP is deleted. All engine logic lives in src/lib/sop/.
 model IssueRunbook {
   id                 String             @id @default(cuid())
   issueId            String?
   taskId             String?
+  noteId             String?
   sopId              String?
   sopVersion         Int
   title              String
@@ -725,16 +795,20 @@ model IssueRunbook {
   assignmentType     SopAssignmentType?
   currentStepId      String?
   definitionSnapshot Json               @default("{}")
+  completedAt        DateTime?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
   issue  Issue?         @relation(fields: [issueId], references: [id], onDelete: Cascade)
   task   Task?          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  note   Note?          @relation(fields: [noteId], references: [id], onDelete: Cascade)
   sop    Sop?           @relation(fields: [sopId], references: [id], onDelete: SetNull)
   steps  RunbookStep[]
   events RunbookEvent[]
 
   @@index([issueId])
+  @@index([taskId])
+  @@index([noteId])
   @@map("issue_runbooks")
 }
 
@@ -750,6 +824,7 @@ enum RunbookStepStatus {
 model RunbookStep {
   id              String            @id @default(cuid())
   runbookId       String
+  key             String?
   position        Int
   title           String
   description     String            @default("")
@@ -763,6 +838,14 @@ model RunbookStep {
   output          String            @default("")
   // Free-text executor for non-human completions, e.g. "automated pipeline #4418".
   executor        String?
+  // Type-specific runtime state, e.g. CHECKLIST → { checklist: { <itemKey>: { done, by, at } } }.
+  data            Json              @default("{}")
+  // TESTING outcome (PASSED / FAILED); readable in conditions as steps.<key>.result.
+  result          String?
+  // Secret for POST /api/sop-executions/callbacks/{token}, issued while an external
+  // GITHUB_ACTION / AUTOMATED_ACTION step is waiting; cleared once it finishes.
+  callbackToken   String?           @unique
+  startedAt       DateTime?
   completedById   String?
   completedAt     DateTime?
   createdAt       DateTime          @default(now())
@@ -810,6 +893,9 @@ model RunbookEvent {
   @@map("runbook_events")
 }
 
+// Event-driven automation on an SOP: when `trigger` fires during an execution and
+// `condition` matches the execution context, run `action` — one action object or an
+// array of them (see the action registry in src/lib/sop/actions.ts).
 model SopRule {
   id        String   @id @default(cuid())
   sopId     String
@@ -868,6 +954,7 @@ model AttachmentBlob {
 enum NotificationType {
   MENTION
   ASSIGNED
+  SOP
 }
 
 // In-app notifications (the bell). `data` carries display details captured at

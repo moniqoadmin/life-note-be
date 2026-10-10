@@ -4,7 +4,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, parseJsonBody } from "@/lib/api";
 import { createSopRuleSchema } from "@/lib/validation";
-import { getAccessibleSop } from "@/lib/sops";
+import { getAccessibleSop, serializeRule } from "@/lib/sops";
 
 type Params = { params: Promise<{ id: string; ruleId: string }> };
 
@@ -21,13 +21,13 @@ export async function PATCH(req: Request, { params }: Params) {
   const rule = await prisma.$transaction(async (tx) => {
     const updated = await tx.sopRule.update({ where: { id: ruleId }, data: {
       name: data.name, trigger: data.trigger, enabled: data.enabled,
-      condition: data.condition as Prisma.InputJsonValue,
-      action: data.action as unknown as Prisma.InputJsonValue,
+      condition: data.condition === null ? Prisma.JsonNull : (data.condition as Prisma.InputJsonValue),
+      action: data.actions as unknown as Prisma.InputJsonValue,
     } });
     await tx.sop.update({ where: { id }, data: { version: { increment: 1 } } });
     return updated;
   });
-  return NextResponse.json({ rule });
+  return NextResponse.json({ rule: serializeRule(rule) });
 }
 
 export async function DELETE(_req: Request, { params }: Params) {
