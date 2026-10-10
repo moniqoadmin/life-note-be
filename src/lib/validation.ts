@@ -307,6 +307,21 @@ export const updateSopStepSchema = z
   })
   .refine((data) => Object.keys(data).length > 0, "No fields to update");
 
+export const reorderSopStepsSchema = z.object({
+  stepIds: z.array(z.string().min(1)).min(1).max(200),
+});
+
+// Dry-run a condition against a subject's context (plus optional overrides).
+export const evaluateConditionSchema = z
+  .object({
+    condition: sopConditionSchema,
+    issueId: z.string().min(1).optional(),
+    taskId: z.string().min(1).optional(),
+    noteId: z.string().min(1).optional(),
+    context: z.record(z.string(), z.unknown()).default({}),
+  })
+  .refine((d) => [d.issueId, d.taskId, d.noteId].filter(Boolean).length <= 1, "Give at most one of issueId, taskId, noteId");
+
 // --- SOP assignments (entity-level defaults) ---------------------------------
 export const sopAssignmentScopeSchema = z.object({
   type: z.enum(["NOTE", "COMPONENT", "PROJECT"]),
