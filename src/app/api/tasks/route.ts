@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { createTaskSchema, taskStatusSchema } from "@/lib/validation";
 import { validationError, apiError } from "@/lib/api";
+import { createTaskRunbook } from "@/lib/sop-engine";
 
 /**
  * @swagger
@@ -109,10 +110,30 @@ export async function POST(req: Request) {
     return validationError(parsed.error);
   }
 
-  const { title, content, status, dueDate } = parsed.data;
+  const { title, content, status, dueDate, sopOverrideId } = parsed.data;
+  if (sopOverrideId) {
+    const sop = await prisma.sop.findFirst({ where: { id: sopOverrideId, userId, workspaceId: null } });
+    if (!sop) return apiError(400, "Task SOP must be a private SOP owned by you");
+  }
 
-  const task = await prisma.task.create({
-    data: { userId, title, content, status, dueDate: dueDate ?? null },
+  const task = await prisma.$transaction(async (tx) => {
+    const created = await tx.task.create({
+      data: { userId, title, content, status, dueDate: dueDate ?? null, sopOverrideId: sopOverrideId ?? null },
+    });
+    if (sopOverrideId) await createTaskRunbook(tx, created, sopOverrideId);
+    return tx.task.findUniqueOrThrow({
+      where: { id: created.id },
+      include: {
+        runbooks: {
+          include: {
+            steps: {
+              orderBy: { position: "asc" },
+              include: { approvals: { include: { user: { select: { id: true, name: true, image: true } } } } },
+            },
+          },
+        },
+      },
+    });
   });
 
   return NextResponse.json({ task }, { status: 201 });

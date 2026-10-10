@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { updateTaskSchema } from "@/lib/validation";
 import { getOwnedTask } from "@/lib/tasks";
 import { apiError, validationError } from "@/lib/api";
+import { createTaskRunbook } from "@/lib/sop-engine";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -122,7 +123,21 @@ export async function GET(_req: Request, { params }: Params) {
     return apiError(404, "Task not found");
   }
 
-  return NextResponse.json({ task });
+  const taskWithRunbooks = await prisma.task.findUniqueOrThrow({
+    where: { id },
+    include: {
+      runbooks: {
+        include: {
+          steps: {
+            orderBy: { position: "asc" },
+            include: { approvals: { orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, name: true, image: true } } } } },
+          },
+          events: { orderBy: { createdAt: "asc" } },
+        },
+      },
+    },
+  });
+  return NextResponse.json({ task: taskWithRunbooks });
 }
 
 export async function PATCH(req: Request, { params }: Params) {
@@ -144,16 +159,45 @@ export async function PATCH(req: Request, { params }: Params) {
     return validationError(parsed.error);
   }
 
-  const { title, content, status, dueDate } = parsed.data;
+  const { title, content, status, dueDate, sopOverrideId } = parsed.data;
+  if (sopOverrideId) {
+    const sop = await prisma.sop.findFirst({ where: { id: sopOverrideId, userId, workspaceId: null } });
+    if (!sop) return apiError(400, "Task SOP must be a private SOP owned by you");
+  }
 
-  const task = await prisma.task.update({
-    where: { id },
-    data: {
+  const task = await prisma.$transaction(async (tx) => {
+    const updated = await tx.task.update({
+      where: { id },
+      data: {
       ...(title !== undefined && { title }),
       ...(content !== undefined && { content }),
       ...(status !== undefined && { status }),
       ...(dueDate !== undefined && { dueDate }),
-    },
+        ...(sopOverrideId !== undefined && { sopOverrideId }),
+      },
+    });
+    if (sopOverrideId !== undefined) {
+      const active = await tx.issueRunbook.findMany({ where: { taskId: id, assignmentType: "TASK_OVERRIDE", status: { in: ["PENDING", "IN_PROGRESS", "BLOCKED"] } }, select: { id: true } });
+      if (active.length) {
+        const runIds = active.map((run) => run.id);
+        await tx.issueRunbook.updateMany({ where: { id: { in: runIds } }, data: { status: "SKIPPED", currentStepId: null } });
+        await tx.runbookStep.updateMany({ where: { runbookId: { in: runIds }, status: { in: ["PENDING", "IN_PROGRESS"] } }, data: { status: "SKIPPED", completedAt: new Date() } });
+      }
+      if (sopOverrideId) await createTaskRunbook(tx, updated, sopOverrideId);
+    }
+    return tx.task.findUniqueOrThrow({
+      where: { id },
+      include: {
+        runbooks: {
+          include: {
+            steps: {
+              orderBy: { position: "asc" },
+              include: { approvals: { orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, name: true, image: true } } } } },
+            },
+          },
+        },
+      },
+    });
   });
 
   return NextResponse.json({ task });

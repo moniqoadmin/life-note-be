@@ -14,6 +14,7 @@ import {
   validateIssueRefs,
 } from "@/lib/issues";
 import { createNotifications, sendPendingEmails } from "@/lib/notifications";
+import { createAssignedRunbook } from "@/lib/sop-engine";
 
 type Params = { params: Promise<{ projectId: string }> };
 
@@ -191,8 +192,16 @@ export async function POST(req: Request, { params }: Params) {
         epicId: data.epicId ?? null,
         sprintId: data.sprintId ?? null,
         releaseId: data.releaseId ?? null,
+        sopOverrideId: data.sopOverrideId ?? null,
       },
     });
+
+    const runbookId = await createAssignedRunbook(tx, issue, data.sopOverrideId);
+    if (runbookId) {
+      await recordActivity(tx, issue.id, userId, "RUNBOOK_ATTACHED", {
+        runbookId, assignmentType: data.sopOverrideId ? "TASK_OVERRIDE" : "ENTITY_INHERITED",
+      });
+    }
 
     const watcherIds = [...new Set([userId, data.assigneeId].filter((id): id is string => !!id))];
     await tx.issueWatcher.createMany({

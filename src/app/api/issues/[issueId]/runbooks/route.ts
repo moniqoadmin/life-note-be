@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
 import { attachRunbookSchema } from "@/lib/validation";
 import { getAccessibleSop } from "@/lib/sops";
+import { evaluateCondition, recordRunbookEvent } from "@/lib/sop-engine";
 import {
   getAccessibleIssue,
   getRunbook,
@@ -73,7 +75,8 @@ export async function GET(_req: Request, { params }: Params) {
   const userId = session.user.id;
   const { issueId } = await params;
 
-  if (!(await getAccessibleIssue(userId, issueId))) {
+  const issue = await getAccessibleIssue(userId, issueId);
+  if (!issue) {
     return apiError(404, "Issue not found");
   }
 
@@ -89,7 +92,8 @@ export async function POST(req: Request, { params }: Params) {
   const userId = session.user.id;
   const { issueId } = await params;
 
-  if (!(await getAccessibleIssue(userId, issueId))) {
+  const issue = await getAccessibleIssue(userId, issueId);
+  if (!issue) {
     return apiError(404, "Issue not found");
   }
 
@@ -105,6 +109,7 @@ export async function POST(req: Request, { params }: Params) {
     where: { sopId },
     orderBy: { position: "asc" },
   });
+  const rules = await prisma.sopRule.findMany({ where: { sopId } });
   if (steps.length === 0) {
     return apiError(400, "This SOP has no steps to run");
   }
@@ -117,6 +122,11 @@ export async function POST(req: Request, { params }: Params) {
         sopVersion: sop.version,
         title: sop.title,
         mode,
+        definitionSnapshot: {
+          id: sop.id, title: sop.title, version: sop.version,
+          steps: steps.map((s) => ({ id: s.id, position: s.position, title: s.title, description: s.description, command: s.command, requiresSignoff: s.requiresSignoff, type: s.type, config: s.config, condition: s.condition })),
+          rules,
+        },
         steps: {
           create: steps.map((s, index) => ({
             position: index,
@@ -124,10 +134,22 @@ export async function POST(req: Request, { params }: Params) {
             description: s.description,
             command: s.command,
             requiresSignoff: s.requiresSignoff,
+            type: s.type,
+            config: s.config as Prisma.InputJsonValue,
+            ...(s.condition !== null && { condition: s.condition as Prisma.InputJsonValue }),
+            status: evaluateCondition(s.condition, issue) ? "PENDING" : "SKIPPED",
           })),
         },
       },
     });
+    const first = await tx.runbookStep.findFirst({ where: { runbookId: runbook.id, status: "PENDING" }, orderBy: { position: "asc" } });
+    if (first) {
+      await tx.runbookStep.update({ where: { id: first.id }, data: { status: "IN_PROGRESS" } });
+      await tx.issueRunbook.update({ where: { id: runbook.id }, data: { status: "IN_PROGRESS", currentStepId: first.id } });
+    } else {
+      await tx.issueRunbook.update({ where: { id: runbook.id }, data: { status: "COMPLETED" } });
+    }
+    await recordRunbookEvent(tx, runbook.id, userId, "EXECUTION_CREATED", { sopId: sop.id, sopVersion: sop.version, assignmentType: "MANUAL" });
     await recordActivity(tx, issueId, userId, "RUNBOOK_ATTACHED", {
       runbookId: runbook.id,
       title: sop.title,

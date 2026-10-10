@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
@@ -106,8 +107,13 @@ export async function POST(req: Request, { params }: Params) {
       orderBy: { position: "asc" },
       select: { id: true },
     });
+    const { config, condition, ...stepFields } = fields;
     const created = await tx.sopStep.create({
-      data: { sopId: id, ...fields, command: command ?? null, position: siblings.length },
+      data: {
+        sopId: id, ...stepFields, command: command ?? null, position: siblings.length,
+        config: config as Prisma.InputJsonValue,
+        ...(condition !== undefined && { condition: condition as Prisma.InputJsonValue }),
+      },
     });
     if (position !== undefined && position < siblings.length) {
       const order = reorder([...siblings.map((s) => s.id), created.id], created.id, position);

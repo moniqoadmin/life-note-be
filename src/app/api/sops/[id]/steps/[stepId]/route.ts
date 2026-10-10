@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { parseJsonBody, apiError } from "@/lib/api";
@@ -73,7 +74,12 @@ export async function PATCH(req: Request, { params }: Params) {
 
   const parsed = await parseJsonBody(req, updateSopStepSchema);
   if (!parsed.success) return parsed.response;
-  const { position, ...fields } = parsed.data;
+  const { position, config, condition, ...stepFields } = parsed.data;
+  const fields = {
+    ...stepFields,
+    ...(config !== undefined && { config: config as Prisma.InputJsonValue }),
+    ...(condition !== undefined && { condition: condition === null ? Prisma.DbNull : condition as Prisma.InputJsonValue }),
+  };
 
   const step = await prisma.$transaction(async (tx) => {
     if (position !== undefined) {

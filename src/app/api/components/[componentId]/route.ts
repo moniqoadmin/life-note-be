@@ -65,7 +65,14 @@ export async function PATCH(req: Request, { params }: Params) {
 
   const parsed = await parseJsonBody(req, updateComponentSchema);
   if (!parsed.success) return parsed.response;
-  const { name, description } = parsed.data;
+  const { name, description, defaultSopId } = parsed.data;
+
+  if (defaultSopId) {
+    const sop = await prisma.sop.findFirst({
+      where: { id: defaultSopId, workspaceId: (await prisma.project.findUniqueOrThrow({ where: { id: existing.projectId }, select: { workspaceId: true } })).workspaceId },
+    });
+    if (!sop) return apiError(400, "Default SOP must be shared with this component's workspace");
+  }
 
   if (name !== undefined && name !== existing.name) {
     const duplicate = await prisma.component.findUnique({
@@ -81,6 +88,7 @@ export async function PATCH(req: Request, { params }: Params) {
     data: {
       ...(name !== undefined && { name }),
       ...(description !== undefined && { description }),
+      ...(defaultSopId !== undefined && { defaultSopId }),
     },
   });
 

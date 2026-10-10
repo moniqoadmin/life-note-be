@@ -52,6 +52,7 @@ type IssueRefs = {
   epicId?: string | null;
   sprintId?: string | null;
   releaseId?: string | null;
+  sopOverrideId?: string | null;
 };
 
 /**
@@ -65,7 +66,7 @@ export async function validateIssueRefs(
   refs: IssueRefs,
   issueId?: string
 ): Promise<string | null> {
-  const { assigneeId, parentId, componentId, epicId, sprintId, releaseId } = refs;
+  const { assigneeId, parentId, componentId, epicId, sprintId, releaseId, sopOverrideId } = refs;
 
   if (assigneeId) {
     const member = await prisma.workspaceMember.findUnique({
@@ -88,6 +89,10 @@ export async function validateIssueRefs(
   if (releaseId) {
     const found = await prisma.release.findFirst({ where: { id: releaseId, workspaceId } });
     if (!found) return "Release not found in this workspace";
+  }
+  if (sopOverrideId) {
+    const found = await prisma.sop.findFirst({ where: { id: sopOverrideId, workspaceId } });
+    if (!found) return "SOP override must be shared with this workspace";
   }
   if (parentId) {
     if (parentId === issueId) return "An issue can't be its own parent";
@@ -163,9 +168,13 @@ export function relationLabel(type: IssueRelationType, direction: "outward" | "i
 }
 
 const runbookInclude = {
+  events: { orderBy: { createdAt: "asc" }, include: { actor: { select: userSelect } } },
   steps: {
     orderBy: { position: "asc" },
-    include: { completedBy: { select: userSelect } },
+    include: {
+      completedBy: { select: userSelect },
+      approvals: { orderBy: { createdAt: "asc" }, include: { user: { select: userSelect } } },
+    },
   },
 } satisfies Prisma.IssueRunbookInclude;
 

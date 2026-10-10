@@ -13,6 +13,7 @@ import {
   validateIssueRefs,
 } from "@/lib/issues";
 import { createNotifications, sendPendingEmails } from "@/lib/notifications";
+import { applySopRules, createAssignedRunbook } from "@/lib/sop-engine";
 
 type Params = { params: Promise<{ issueId: string }> };
 
@@ -153,6 +154,38 @@ export async function PATCH(req: Request, { params }: Params) {
     }
 
     const updated = await tx.issue.update({ where: { id: issueId }, data });
+
+    if (statusChanged) {
+      const executions = await tx.issueRunbook.findMany({
+        where: { issueId, status: { in: ["PENDING", "IN_PROGRESS", "BLOCKED"] } }, select: { id: true },
+      });
+      for (const execution of executions) {
+        await applySopRules(tx, execution.id, issueId, "ISSUE_STATUS_CHANGED", userId);
+      }
+    }
+
+    if (changes.sopOverrideId !== undefined || changes.componentId !== undefined) {
+      // Preserve prior execution records while closing the previous automatically assigned run.
+      const priorRuns = await tx.issueRunbook.findMany({
+        where: { issueId, assignmentType: { not: null }, status: { in: ["PENDING", "IN_PROGRESS", "BLOCKED"] } },
+        select: { id: true },
+      });
+      if (priorRuns.length) {
+        const runIds = priorRuns.map((run) => run.id);
+        await tx.issueRunbook.updateMany({ where: { id: { in: runIds } }, data: { status: "SKIPPED", currentStepId: null } });
+        await tx.runbookStep.updateMany({
+          where: { runbookId: { in: runIds }, status: { in: ["PENDING", "IN_PROGRESS"] } },
+          data: { status: "SKIPPED", completedAt: new Date(), completedById: userId },
+        });
+      }
+      const runbookId = await createAssignedRunbook(tx, updated, updated.sopOverrideId);
+      if (runbookId) {
+        await recordActivity(tx, issueId, userId, "RUNBOOK_ATTACHED", {
+          runbookId,
+          assignmentType: updated.sopOverrideId ? "TASK_OVERRIDE" : "ENTITY_INHERITED",
+        });
+      }
+    }
 
     // Board reordering is noise in the history; everything else is recorded.
     for (const [field, to] of Object.entries(changes)) {
