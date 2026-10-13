@@ -11,7 +11,7 @@ export function getClientIp(req: Request): string {
   if (forwardedFor) {
     const first = forwardedFor.split(",")[0]?.trim();
     if (first) return first;
-  }
+  } 
 
   const realIp = req.headers.get("x-real-ip");
   if (realIp) return realIp.trim();
